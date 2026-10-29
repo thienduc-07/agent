@@ -1,0 +1,41 @@
+# Dependencies
+node_modules/
+.pnp
+.pnp.js
+
+# Python Virtual Environments
+venv
+.venv
+backend/venv/
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+
+# Databases & Cache
+*.db
+*.sqlite3
+.pytest_cache/
+
+# Next.js Build Outputs
+.next/
+out/
+build/
+dist/
+
+# Scratch & Raw Extraction dumps
+frontend/scratch/
+scratch/
+test_*.glb
+
+# OS & IDE
+.DS_Store
+Thumbs.db
+*.tsbuildinfo
+next-env.d.ts
+.vscode/
+
+# Local Environment Variables
+.env
+.env.local
+.env.*.local
