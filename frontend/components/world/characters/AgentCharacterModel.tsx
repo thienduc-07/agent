@@ -3,7 +3,7 @@
 import React, { useMemo, useRef, useEffect } from "react";
 import * as THREE from "three";
 import { useFrame } from "@react-three/fiber";
-import { useGLTF, useAnimations, Sparkles, Html } from "@react-three/drei";
+import { useGLTF, Sparkles, Html } from "@react-three/drei";
 import { SkeletonUtils } from "three-stdlib";
 import { WorldAgentStatus } from "@/types";
 import { applyAnimeCelShading } from "@/lib/animeCelShading";
@@ -21,6 +21,7 @@ export const CHARACTER_SPECS: Record<
     url: string;
     targetHeight: number;
     auraColor: string;
+    rotationX?: number;
     name: string;
   }
 > = {
@@ -44,7 +45,7 @@ export const CHARACTER_SPECS: Record<
   },
   nami: {
     url: "/models/characters/nami.glb",
-    targetHeight: 2.10, // Strict maximum 2.10m - No giant Nami
+    targetHeight: 2.10,
     auraColor: "#ffea00",
     name: "Nami",
   },
@@ -62,7 +63,7 @@ export const CHARACTER_SPECS: Record<
   },
   chopper: {
     url: "/models/characters/chopper.glb",
-    targetHeight: 1.15, // Compact doctor reindeer
+    targetHeight: 1.15,
     auraColor: "#ff80bf",
     name: "Chopper",
   },
@@ -74,8 +75,9 @@ export const CHARACTER_SPECS: Record<
   },
   franky: {
     url: "/models/characters/franky.glb",
-    targetHeight: 3.50, // Massive upright cyborg
+    targetHeight: 3.50,
     auraColor: "#ffcc00",
+    rotationX: Math.PI / 2, // Rotates Franky +90 deg around X so he stands 100% upright on his feet
     name: "Franky",
   },
   brook: {
@@ -93,21 +95,21 @@ export const CHARACTER_SPECS: Record<
 };
 
 /**
- * Universal Master Normalizer & Anti T-Pose Relaxer
- * - Preserves upright GLTF coordinate system (Franky stands on feet, head at +Y)
- * - Relaxes T-pose horizontal arms into a natural relaxed stance
- * - Locks height scale precisely to targetHeight
- * - Aligns ground contact to min.y = 0 so feet sit firmly on the island surface
+ * Universal Master Normalizer
+ * - Applies rotationX to orient models upright (Franky +90 deg brings head from -Z to +Y)
+ * - Relaxes T-pose horizontal arms into a natural anime stance
+ * - Sets accurate target height and aligns feet to ground surface (min.y = 0)
  */
 export function prepareAndNormalizeCharacter(
   rawScene: THREE.Object3D,
-  targetHeight: number
+  targetHeight: number,
+  rotationX = 0
 ): THREE.Group {
   const clone = SkeletonUtils.clone(rawScene);
   applyAnimeCelShading(clone);
 
-  // Guarantee upright orientation (Franky and all GLBs have +Y up in world)
-  clone.rotation.x = 0;
+  // Correct orientation (Franky needs +PI/2)
+  clone.rotation.x = rotationX;
 
   const wrapper = new THREE.Group();
   wrapper.add(clone);
@@ -192,44 +194,126 @@ export function prepareAndNormalizeCharacter(
   return wrapper;
 }
 
-// Zoro's Three Legendary Katanas (Wadō Ichimonji, Sandai Kitetsu, Enma)
-// Accurately mounted on his left hip sash at authentic angle, zero ground clipping
-export function ZoroThreeSwords({ isWorking }: { isWorking?: boolean }) {
+// ============================================================================
+// 1. LUFFY (GEAR 5 - SUN GOD NIKA) ANIMATED COMPONENT
+// Joyful Drums of Liberation Bouncing, Elastic Laughing, Cloud Aura Billowing
+// ============================================================================
+function LuffyAnimatedCharacter({
+  spec,
+  status,
+  isMoving,
+}: {
+  spec: any;
+  status?: WorldAgentStatus;
+  isMoving?: boolean;
+}) {
+  const { scene } = (useGLTF as any)(spec.url);
+  const modelRef = useRef<THREE.Group>(null);
+  const cloudAuraRef = useRef<THREE.Mesh>(null);
+
+  const normalizedGroup = useMemo(() => {
+    return prepareAndNormalizeCharacter(scene, spec.targetHeight, spec.rotationX || 0);
+  }, [scene, spec]);
+
+  useFrame((state) => {
+    if (!modelRef.current) return;
+    const t = state.clock.getElapsedTime();
+
+    if (isMoving) {
+      // High-speed Gear 5 running bounce
+      const runStep = t * 11.0;
+      modelRef.current.position.y = Math.abs(Math.sin(runStep)) * 0.12;
+      modelRef.current.rotation.x = 0.12; // Forward lean
+      modelRef.current.rotation.y = Math.sin(runStep * 0.5) * 0.08;
+      modelRef.current.scale.set(1.0, 1.0 + Math.sin(runStep) * 0.05, 1.0);
+    } else {
+      // Nika Drums of Liberation rhythmic bouncing heartbeat (Squash & Stretch)
+      const nikaPulse = Math.sin(t * 5.2);
+      const isLaughing = t % 8.0 > 5.2;
+
+      if (isLaughing) {
+        // Joyful Nika laugh: leans back with arms spread wide
+        modelRef.current.rotation.x = -0.18 + Math.sin(t * 12.0) * 0.04;
+        modelRef.current.position.y = 0.08 + Math.abs(Math.sin(t * 8.0)) * 0.08;
+        modelRef.current.scale.set(1.05, 0.95, 1.05);
+      } else {
+        // Continuous elastic bobbing
+        modelRef.current.position.y = Math.abs(nikaPulse) * 0.06;
+        modelRef.current.rotation.x = 0;
+        modelRef.current.scale.set(
+          1 - Math.abs(nikaPulse) * 0.03,
+          1 + Math.abs(nikaPulse) * 0.05,
+          1 - Math.abs(nikaPulse) * 0.03
+        );
+      }
+    }
+
+    if (cloudAuraRef.current) {
+      cloudAuraRef.current.rotation.y = t * 2.0;
+      cloudAuraRef.current.scale.setScalar(1.0 + Math.sin(t * 3.5) * 0.1);
+    }
+  });
+
+  return (
+    <group ref={modelRef}>
+      <primitive object={normalizedGroup} />
+
+      {/* Floating Gear 5 Cloud Hagoromo Ribbon */}
+      <mesh ref={cloudAuraRef} position={[0, 1.5, 0]}>
+        <torusGeometry args={[0.75, 0.12, 12, 28]} />
+        <meshStandardMaterial
+          color="#f8fafc"
+          emissive="#ffffff"
+          emissiveIntensity={0.6}
+          roughness={0.2}
+          transparent
+          opacity={0.88}
+        />
+      </mesh>
+
+      {/* Conqueror's Haki Lightning Spear */}
+      <group position={[0.2, 1.1, 0.2]}>
+        <Sparkles count={25} scale={2.8} size={4.2} speed={1.8} color="#ff1111" opacity={0.9} />
+        <pointLight color="#ff1111" intensity={3.8} distance={6} />
+      </group>
+    </group>
+  );
+}
+
+// ============================================================================
+// 2. RORONOA ZORO (KING OF HELL) ANIMATED COMPONENT
+// 3 Attached Katanas, Sword Drawing Slash, Emerald Dragon Damnation Blade Waves
+// ============================================================================
+export function ZoroThreeSwords({ isSlashing }: { isSlashing?: boolean }) {
   return (
     <group position={[-0.32, 1.08, -0.06]} rotation={[0.42, -0.32, -0.58]}>
-      {/* 3 Scabbards side-by-side along hip */}
+      {/* 3 Scabbards side-by-side along left hip sash */}
       {[
         { name: "Wado", hiltColor: "#ffffff", sayaColor: "#f8fafc", tsubaColor: "#fbbf24", offsetZ: -0.07, rotY: 0.0 },
         { name: "Kitetsu", hiltColor: "#dc2626", sayaColor: "#1e1b4b", tsubaColor: "#d97706", offsetZ: 0.0, rotY: 0.04 },
         { name: "Enma", hiltColor: "#9333ea", sayaColor: "#581c87", tsubaColor: "#facc15", offsetZ: 0.07, rotY: -0.04 },
       ].map((sword, idx) => (
         <group key={`katana-${idx}`} position={[0, 0, sword.offsetZ]} rotation={[0, sword.rotY, 0]}>
-          {/* Scabbard Body (Elevated above ground) */}
           <mesh position={[0, -0.48, 0]} castShadow>
             <cylinderGeometry args={[0.022, 0.018, 0.98, 8]} />
             <meshStandardMaterial color={sword.sayaColor} roughness={0.35} />
           </mesh>
-          {/* Kojiri (Brass Tip) */}
           <mesh position={[0, -0.98, 0]} castShadow>
             <cylinderGeometry args={[0.02, 0.014, 0.06, 8]} />
             <meshStandardMaterial color="#f59e0b" metalness={0.8} roughness={0.25} />
           </mesh>
-          {/* Koiguchi (Collar) */}
           <mesh position={[0, 0.01, 0]}>
             <cylinderGeometry args={[0.026, 0.024, 0.035, 8]} />
             <meshStandardMaterial color="#f59e0b" metalness={0.8} roughness={0.25} />
           </mesh>
-          {/* Tsuba (Crossguard) */}
           <mesh position={[0, 0.04, 0]} rotation={[Math.PI / 2, 0, 0]} castShadow>
             <cylinderGeometry args={[0.06, 0.06, 0.014, 12]} />
             <meshStandardMaterial color={sword.tsubaColor} metalness={0.85} roughness={0.2} />
           </mesh>
-          {/* Tsuka (Handle with cord wrap) */}
           <mesh position={[0, 0.18, 0]} castShadow>
             <cylinderGeometry args={[0.02, 0.022, 0.28, 8]} />
             <meshStandardMaterial color={sword.hiltColor} roughness={0.5} />
           </mesh>
-          {/* Kashira (Pommel Cap) */}
           <mesh position={[0, 0.33, 0]}>
             <sphereGeometry args={[0.024, 8, 8]} />
             <meshStandardMaterial color="#f59e0b" metalness={0.8} roughness={0.25} />
@@ -237,9 +321,9 @@ export function ZoroThreeSwords({ isWorking }: { isWorking?: boolean }) {
         </group>
       ))}
 
-      {/* Active Battle Stance: Drawn Katana in Right Hand */}
-      {isWorking && (
-        <group position={[0.78, 0.08, 0.52]} rotation={[-0.85, 0.35, 1.25]}>
+      {/* Drawn Katana in Right Hand with Dynamic Slashing Gesture */}
+      {isSlashing && (
+        <group position={[0.82, 0.05, 0.58]} rotation={[-0.85, 0.45, 1.25]}>
           <mesh position={[0, 0.52, 0]} castShadow>
             <boxGeometry args={[0.015, 1.05, 0.04]} />
             <meshStandardMaterial color="#f1f5f9" metalness={0.95} roughness={0.1} />
@@ -262,126 +346,171 @@ export function ZoroThreeSwords({ isWorking }: { isWorking?: boolean }) {
   );
 }
 
-// Luffy Gear 5 Red-Black Conqueror's Haki Lightning Core
-function LuffyHakiVFX() {
-  const meshRef = useRef<THREE.Mesh>(null);
-  const lightRef = useRef<THREE.PointLight>(null);
+function ZoroAnimatedCharacter({
+  spec,
+  status,
+  isMoving,
+}: {
+  spec: any;
+  status?: WorldAgentStatus;
+  isMoving?: boolean;
+}) {
+  const { scene } = (useGLTF as any)(spec.url);
+  const modelRef = useRef<THREE.Group>(null);
+  const slashWaveRef = useRef<THREE.Mesh>(null);
+
+  const normalizedGroup = useMemo(() => {
+    return prepareAndNormalizeCharacter(scene, spec.targetHeight, spec.rotationX || 0);
+  }, [scene, spec]);
+
+  const slashCycle = useRef(0);
 
   useFrame((state) => {
+    if (!modelRef.current) return;
     const t = state.clock.getElapsedTime();
-    if (meshRef.current) {
-      meshRef.current.rotation.y = t * 6.0;
-      const s = 0.9 + Math.sin(t * 18.0) * 0.2;
-      meshRef.current.scale.set(s, 1.0, s);
-    }
-    if (lightRef.current) {
-      lightRef.current.intensity = 3.5 + Math.sin(t * 22.0) * 1.5;
+    const isWorking = status === "working";
+
+    // Periodic sword slash action every 6.5 seconds
+    const cycleTime = t % 6.5;
+    const isSlashing = isWorking || (cycleTime > 4.2 && cycleTime < 5.8);
+    slashCycle.current = isSlashing ? 1 : 0;
+
+    if (isMoving) {
+      const step = t * 9.0;
+      modelRef.current.position.y = Math.abs(Math.sin(step)) * 0.04;
+      modelRef.current.rotation.x = 0.08;
+      modelRef.current.rotation.z = Math.sin(step) * 0.03;
+    } else if (isSlashing) {
+      // Dynamic sword slash attack swing
+      const slashProgress = (cycleTime - 4.2) / 1.6;
+      modelRef.current.rotation.y = -0.4 + Math.sin(slashProgress * Math.PI) * 0.75;
+      modelRef.current.rotation.x = 0.06;
+      modelRef.current.position.y = 0.02;
+
+      if (slashWaveRef.current) {
+        slashWaveRef.current.visible = true;
+        slashWaveRef.current.scale.setScalar(0.5 + slashProgress * 2.2);
+        slashWaveRef.current.rotation.z = slashProgress * Math.PI * 0.8;
+      }
+    } else {
+      // Swordsman focused ready stance
+      modelRef.current.position.y = Math.sin(t * 1.8) * 0.015;
+      modelRef.current.rotation.y = -0.15;
+      modelRef.current.rotation.x = 0.03; // Slight forward combat crouch
+      modelRef.current.rotation.z = 0;
+
+      if (slashWaveRef.current) {
+        slashWaveRef.current.visible = false;
+      }
     }
   });
 
   return (
-    <group position={[0.2, 1.2, 0.3]}>
-      <mesh ref={meshRef}>
-        <cylinderGeometry args={[0.04, 0.08, 1.6, 6]} />
-        <meshBasicMaterial color="#ff1111" />
+    <group ref={modelRef}>
+      <primitive object={normalizedGroup} />
+
+      {/* Zoro's 3 Attached Katanas & Drawn Katana */}
+      <ZoroThreeSwords isSlashing={true} />
+
+      {/* Emerald Dragon Damnation Slash Wave */}
+      <mesh ref={slashWaveRef} position={[0.4, 1.2, 0.8]} rotation={[0.2, 0, 0.4]} visible={false}>
+        <ringGeometry args={[0.6, 0.95, 24, 1, 0, Math.PI * 1.3]} />
+        <meshBasicMaterial color="#00ffaa" transparent opacity={0.85} side={THREE.DoubleSide} />
       </mesh>
-      <pointLight ref={lightRef} color="#ff1111" intensity={3.5} distance={5} />
+
+      <Sparkles count={20} scale={2.5} size={3.2} speed={1.2} color="#00ffaa" opacity={0.85} />
+      <pointLight position={[0, 1.2, 0]} color="#00ffaa" intensity={2.8} distance={6} />
     </group>
   );
 }
 
-// Zoro Cyan-Green Dragon Blade Aura
-function ZoroBladeVFX() {
-  const auraRef = useRef<THREE.Group>(null);
+// ============================================================================
+// 3. FRANKY (IRON PIRATE CYBORG BF-38) ANIMATED COMPONENT
+// Stands 100% Upright (+PI/2), Iconic "SUUUUPER!!" Arm Pose, Arm Stars & Laser
+// ============================================================================
+function FrankyAnimatedCharacter({
+  spec,
+  status,
+  isMoving,
+}: {
+  spec: any;
+  status?: WorldAgentStatus;
+  isMoving?: boolean;
+}) {
+  const { scene } = (useGLTF as any)(spec.url);
+  const modelRef = useRef<THREE.Group>(null);
+  const starGlowRef = useRef<THREE.Mesh>(null);
+
+  const normalizedGroup = useMemo(() => {
+    // Franky MUST have rotationX = Math.PI / 2 to stand upright on his feet!
+    return prepareAndNormalizeCharacter(scene, spec.targetHeight, Math.PI / 2);
+  }, [scene, spec]);
+
   useFrame((state) => {
-    if (auraRef.current) {
-      auraRef.current.rotation.y = state.clock.getElapsedTime() * 2.5;
+    if (!modelRef.current) return;
+    const t = state.clock.getElapsedTime();
+    const isWorking = status === "working";
+
+    // Iconic SUUUUPER pose triggered every 7.5 seconds
+    const cycleTime = t % 7.5;
+    const isSuperPose = isWorking || (cycleTime > 4.5 && cycleTime < 6.8);
+
+    if (isMoving) {
+      // Heavy mechanical stride
+      const step = t * 7.5;
+      modelRef.current.position.y = Math.abs(Math.sin(step)) * 0.05;
+      modelRef.current.rotation.x = 0.05;
+      modelRef.current.rotation.y = 0;
+    } else if (isSuperPose) {
+      // Magnificent SUUUUPER!! Triumphant Pose
+      modelRef.current.position.y = 0.06;
+      modelRef.current.rotation.x = -0.08; // Chest pushed out proudly
+      modelRef.current.rotation.y = Math.sin(t * 8.0) * 0.02;
+
+      if (starGlowRef.current) {
+        starGlowRef.current.visible = true;
+        const pulse = 1.0 + Math.sin(t * 18.0) * 0.25;
+        starGlowRef.current.scale.setScalar(pulse);
+      }
+    } else {
+      // Upright confident cyborg stance
+      modelRef.current.position.y = Math.sin(t * 1.5) * 0.012;
+      modelRef.current.rotation.x = 0;
+      modelRef.current.rotation.y = Math.sin(t * 0.6) * 0.04;
+
+      if (starGlowRef.current) {
+        starGlowRef.current.visible = false;
+      }
     }
   });
 
   return (
-    <group ref={auraRef} position={[0, 0.9, 0]}>
-      {[-0.5, 0.5].map((x, i) => (
-        <mesh key={i} position={[x, 0, 0]} rotation={[0, 0, x > 0 ? 0.3 : -0.3]}>
-          <ringGeometry args={[0.3, 0.45, 16]} />
-          <meshBasicMaterial color="#00ffaa" transparent opacity={0.7} side={THREE.DoubleSide} />
+    <group ref={modelRef}>
+      <primitive object={normalizedGroup} />
+
+      {/* Franky "SUUUUPER!!" Forearm Star Energy Blast Emblem */}
+      <group ref={starGlowRef} position={[0, 3.65, 0.4]} visible={false}>
+        <mesh>
+          <sphereGeometry args={[0.35, 16, 16]} />
+          <meshBasicMaterial color="#38bdf8" />
         </mesh>
-      ))}
-      <Sparkles count={18} scale={2.2} size={3} speed={1.2} color="#00ffaa" opacity={0.8} />
+        <pointLight color="#38bdf8" intensity={4.5} distance={8} />
+        <Html position={[0, 0.6, 0]} center transform distanceFactor={14}>
+          <div className="font-extrabold text-2xl text-cyan-300 drop-shadow-[0_0_12px_#38bdf8] select-none pointer-events-none">
+            ⭐ SUUUUPER!! ⭐
+          </div>
+        </Html>
+      </group>
+
+      <Sparkles count={25} scale={3.5} size={4.0} speed={1.2} color="#ffcc00" opacity={0.8} />
     </group>
   );
 }
 
-// Sanji Ifrit Jambe Fire on Right Leg
-function SanjiFlameVFX() {
-  const flameRef = useRef<THREE.Mesh>(null);
-  useFrame((state) => {
-    if (flameRef.current) {
-      const t = state.clock.getElapsedTime();
-      const s = 0.85 + Math.sin(t * 16.0) * 0.25;
-      flameRef.current.scale.set(s, s * 1.2, s);
-    }
-  });
-
-  return (
-    <group position={[0.25, 0.3, 0]}>
-      <mesh ref={flameRef}>
-        <coneGeometry args={[0.25, 0.65, 8]} />
-        <meshBasicMaterial color="#ffaa00" />
-      </mesh>
-      <pointLight color="#38bdf8" intensity={2.5} distance={3} />
-    </group>
-  );
-}
-
-// Brook Floating 3D Musical Notes
-function BrookNotesVFX() {
-  const groupRef = useRef<THREE.Group>(null);
-  useFrame((state) => {
-    if (groupRef.current) {
-      const t = state.clock.getElapsedTime();
-      groupRef.current.position.y = 2.4 + Math.sin(t * 2.0) * 0.2;
-      groupRef.current.rotation.y = t * 0.8;
-    }
-  });
-
-  return (
-    <group ref={groupRef}>
-      <Html position={[-0.4, 0, 0]} center transform distanceFactor={14}>
-        <span className="text-cyan-300 text-lg font-bold select-none pointer-events-none drop-shadow-[0_0_8px_#22d3ee]">
-          ♪
-        </span>
-      </Html>
-      <Html position={[0.4, 0.3, 0]} center transform distanceFactor={14}>
-        <span className="text-cyan-200 text-xl font-bold select-none pointer-events-none drop-shadow-[0_0_10px_#67e8f9]">
-          ♫
-        </span>
-      </Html>
-      <Sparkles count={15} scale={2.5} size={2.5} speed={0.6} color="#38bdf8" />
-    </group>
-  );
-}
-
-// Nami Golden Zeus Lightning Sparkles
-function NamiZeusVFX() {
-  return (
-    <group position={[0, 1.8, 0]}>
-      <Sparkles count={25} scale={2.5} size={3.8} speed={1.5} color="#fde047" opacity={0.9} />
-      <pointLight color="#facc15" intensity={2.0} distance={4} />
-    </group>
-  );
-}
-
-// Chopper Sakura Petals
-function ChopperSakuraVFX() {
-  return (
-    <group position={[0, 0.8, 0]}>
-      <Sparkles count={20} scale={1.8} size={3.0} speed={0.8} color="#f472b6" opacity={0.85} />
-    </group>
-  );
-}
-
-// Sanji Animated Component with 30 Genuine Skeletal Animations
+// ============================================================================
+// 4. SANJI (BLACK LEG) ANIMATED COMPONENT
+// 30 Skeletal Animations via AnimationMixer, Ifrit Jambe Plasma Kicks
+// ============================================================================
 function SanjiAnimatedCharacter({
   spec,
   status,
@@ -393,38 +522,135 @@ function SanjiAnimatedCharacter({
 }) {
   const { scene, animations } = (useGLTF as any)(spec.url);
   const groupRef = useRef<THREE.Group>(null);
-  const { actions } = useAnimations(animations, groupRef);
 
-  const normalizedGroup = useMemo(() => {
-    return prepareAndNormalizeCharacter(scene, spec.targetHeight);
-  }, [scene, spec]);
+  const { normalizedGroup, mixer, actions } = useMemo(() => {
+    const clone = SkeletonUtils.clone(scene);
+    applyAnimeCelShading(clone);
+
+    // Normalize height
+    const wrapper = new THREE.Group();
+    wrapper.add(clone);
+    wrapper.updateMatrixWorld(true);
+
+    const box = new THREE.Box3().setFromObject(wrapper);
+    const size = new THREE.Vector3();
+    box.getSize(size);
+    const scale = spec.targetHeight / Math.max(size.y, 0.01);
+    wrapper.scale.setScalar(scale);
+    wrapper.updateMatrixWorld(true);
+
+    const finalBox = new THREE.Box3().setFromObject(wrapper);
+    const center = new THREE.Vector3();
+    finalBox.getCenter(center);
+    wrapper.position.set(-center.x, -finalBox.min.y, -center.z);
+
+    // Direct AnimationMixer on cloned skeleton
+    const mx = new THREE.AnimationMixer(clone);
+    const acts: Record<string, THREE.AnimationAction> = {};
+    if (animations && animations.length > 0) {
+      animations.forEach((clip: THREE.AnimationClip) => {
+        acts[clip.name] = mx.clipAction(clip);
+      });
+    }
+
+    return { normalizedGroup: wrapper, mixer: mx, actions: acts };
+  }, [scene, animations, spec]);
 
   useEffect(() => {
-    if (!actions) return;
     const isWorking = status === "working";
-    const currentAction = isMoving || isWorking ? "pl_sanji_atta01_run" : "pl_sanji_atta01_idle_a";
-    const prevAction = currentAction === "pl_sanji_atta01_run" ? "pl_sanji_atta01_idle_a" : "pl_sanji_atta01_run";
+    const currentActionName = isMoving || isWorking ? "pl_sanji_atta01_run" : "pl_sanji_atta01_idle_a";
+    const active = actions[currentActionName] || actions["pl_sanji_atta01_idle_a"];
 
-    actions[prevAction]?.fadeOut(0.3);
-    const active = actions[currentAction] || actions["pl_sanji_atta01_idle_a"];
     if (active) {
-      active.reset().fadeIn(0.3).play();
+      active.reset().fadeIn(0.35).play();
     }
 
     return () => {
-      actions[currentAction]?.fadeOut(0.2);
+      active?.fadeOut(0.25);
     };
   }, [actions, status, isMoving]);
+
+  useFrame((_, delta) => {
+    mixer.update(delta);
+  });
 
   return (
     <group ref={groupRef}>
       <primitive object={normalizedGroup} />
-      <SanjiFlameVFX />
+
+      {/* Ifrit Jambe Blue Plasma Fire on Right Leg */}
+      <group position={[0.22, 0.28, 0]}>
+        <mesh>
+          <coneGeometry args={[0.22, 0.7, 8]} />
+          <meshBasicMaterial color="#38bdf8" />
+        </mesh>
+        <pointLight color="#38bdf8" intensity={3.5} distance={4} />
+      </group>
     </group>
   );
 }
 
-// Nami Rigged Skeletal Animation Component (250 bones)
+// ============================================================================
+// 5. CHOPPER (REINDEER DOCTOR) ANIMATED COMPONENT
+// Adorable Hops, Mortar & Pestle Brewing, Sakura Blossom Shower
+// ============================================================================
+function ChopperAnimatedCharacter({
+  spec,
+  status,
+  isMoving,
+}: {
+  spec: any;
+  status?: WorldAgentStatus;
+  isMoving?: boolean;
+}) {
+  const { scene } = (useGLTF as any)(spec.url);
+  const modelRef = useRef<THREE.Group>(null);
+
+  const normalizedGroup = useMemo(() => {
+    return prepareAndNormalizeCharacter(scene, spec.targetHeight, spec.rotationX || 0);
+  }, [scene, spec]);
+
+  useFrame((state) => {
+    if (!modelRef.current) return;
+    const t = state.clock.getElapsedTime();
+    const isWorking = status === "working";
+
+    if (isMoving) {
+      // Cute fast hopping run
+      const hop = Math.abs(Math.sin(t * 12.0));
+      modelRef.current.position.y = hop * 0.12;
+      modelRef.current.rotation.x = 0.1;
+      modelRef.current.rotation.z = Math.sin(t * 12.0) * 0.08;
+    } else if (isWorking) {
+      // Medicine brewing activity
+      modelRef.current.position.y = Math.sin(t * 4.0) * 0.03;
+      modelRef.current.rotation.y = Math.sin(t * 3.0) * 0.25;
+    } else {
+      // Joyful hops & ear wiggles
+      const hopCycle = t % 5.0;
+      if (hopCycle > 3.5) {
+        modelRef.current.position.y = Math.abs(Math.sin((hopCycle - 3.5) * Math.PI * 3)) * 0.14;
+        modelRef.current.rotation.z = Math.sin(t * 14.0) * 0.06;
+      } else {
+        modelRef.current.position.y = Math.sin(t * 2.2) * 0.02;
+        modelRef.current.rotation.z = 0;
+        modelRef.current.rotation.y = Math.sin(t * 1.0) * 0.08;
+      }
+    }
+  });
+
+  return (
+    <group ref={modelRef}>
+      <primitive object={normalizedGroup} />
+      <Sparkles count={25} scale={1.8} size={3.5} speed={0.9} color="#f472b6" opacity={0.9} />
+    </group>
+  );
+}
+
+// ============================================================================
+// 6. NAMI (WEATHER QUEEN) ANIMATED COMPONENT
+// Clima-Tact Swings, Floating Zeus Stormcloud, Golden Raitei Lightning
+// ============================================================================
 function NamiAnimatedCharacter({
   spec,
   status,
@@ -435,142 +661,32 @@ function NamiAnimatedCharacter({
   isMoving?: boolean;
 }) {
   const { scene } = (useGLTF as any)(spec.url);
-  const groupRef = useRef<THREE.Group>(null);
-  const bonesRef = useRef<{
-    leftThigh?: THREE.Bone;
-    rightThigh?: THREE.Bone;
-    leftKnee?: THREE.Bone;
-    rightKnee?: THREE.Bone;
-    hips?: THREE.Bone;
-    spine?: THREE.Bone;
-  }>({});
-
-  const normalizedGroup = useMemo(() => {
-    const norm = prepareAndNormalizeCharacter(scene, spec.targetHeight);
-    norm.traverse((obj) => {
-      if ((obj as THREE.Bone).isBone) {
-        const name = obj.name.toLowerCase();
-        if (name.includes("leg_left_thigh") || name.includes("thigh_l")) bonesRef.current.leftThigh = obj as THREE.Bone;
-        if (name.includes("leg_right_thigh") || name.includes("thigh_r")) bonesRef.current.rightThigh = obj as THREE.Bone;
-        if (name.includes("leg_left_knee") || name.includes("knee_l")) bonesRef.current.leftKnee = obj as THREE.Bone;
-        if (name.includes("leg_right_knee") || name.includes("knee_r")) bonesRef.current.rightKnee = obj as THREE.Bone;
-        if (name.includes("root_hips") || name.includes("pelvis")) bonesRef.current.hips = obj as THREE.Bone;
-        if (name.includes("spine")) bonesRef.current.spine = obj as THREE.Bone;
-      }
-    });
-    return norm;
-  }, [scene, spec]);
-
-  useFrame((state) => {
-    const t = state.clock.getElapsedTime();
-    const bones = bonesRef.current;
-
-    if (isMoving) {
-      // Coordinated alternating leg walk stride on Nami's skeletal joints
-      const stride = Math.sin(t * 8.5);
-      if (bones.leftThigh) bones.leftThigh.rotation.x = stride * 0.42;
-      if (bones.rightThigh) bones.rightThigh.rotation.x = -stride * 0.42;
-      if (bones.leftKnee) bones.leftKnee.rotation.x = Math.max(0, -stride * 0.45);
-      if (bones.rightKnee) bones.rightKnee.rotation.x = Math.max(0, stride * 0.45);
-      if (bones.hips) bones.hips.position.y = Math.abs(Math.sin(t * 8.5)) * 0.025;
-    } else {
-      // Natural idle breathing & posture weight shift
-      const breathe = Math.sin(t * 2.2) * 0.02;
-      if (bones.spine) bones.spine.rotation.x = breathe;
-      if (bones.hips) bones.hips.rotation.z = Math.sin(t * 1.1) * 0.025;
-    }
-  });
-
-  return (
-    <group ref={groupRef}>
-      <primitive object={normalizedGroup} />
-      <NamiZeusVFX />
-    </group>
-  );
-}
-
-// Standard Character Mesh with Character-Specific Procedural Behaviors & Gait
-function StandardCharacterMesh({
-  appearance,
-  status,
-  isMoving,
-}: {
-  appearance: string;
-  status?: WorldAgentStatus;
-  isMoving?: boolean;
-}) {
-  const spec = CHARACTER_SPECS[appearance] || CHARACTER_SPECS["luffy-gear5"];
-  const { scene } = (useGLTF as any)(spec.url);
   const modelRef = useRef<THREE.Group>(null);
+  const zeusCloudRef = useRef<THREE.Group>(null);
 
   const normalizedGroup = useMemo(() => {
-    return prepareAndNormalizeCharacter(scene, spec.targetHeight);
+    return prepareAndNormalizeCharacter(scene, spec.targetHeight, spec.rotationX || 0);
   }, [scene, spec]);
 
-  // Unique phase offset per character so breathing & activities are un-synchronized
-  const phaseOffset = useMemo(() => {
-    let hash = 0;
-    for (let i = 0; i < appearance.length; i++) hash += appearance.charCodeAt(i);
-    return (hash % 100) * 0.1;
-  }, [appearance]);
-
-  // Natural Procedural Idle & Locomotion Gait Cycle
   useFrame((state) => {
     if (!modelRef.current) return;
-    const t = state.clock.getElapsedTime() + phaseOffset;
-    const isWorking = status === "working";
+    const t = state.clock.getElapsedTime();
 
     if (isMoving) {
-      // Active Locomotion Walking / Running Cycle:
-      // - Forward lean pitch
-      // - Coordinated shoulder counter-twist
-      // - Rhythmic foot contact bobbing (subtle 0.04m, NOT 0.25m jumping)
-      const strideCadence = t * 9.0;
-      modelRef.current.position.y = Math.abs(Math.sin(strideCadence)) * 0.035;
-      modelRef.current.rotation.x = 0.07; // Natural slight forward lean
-      modelRef.current.rotation.z = Math.sin(strideCadence) * 0.035; // Shoulder sway
-      modelRef.current.rotation.y = Math.sin(strideCadence * 0.5) * 0.03;
-    } else if (isWorking) {
-      // Active Task Working Pose
-      modelRef.current.position.y = Math.abs(Math.sin(t * 4.5)) * 0.04;
-      modelRef.current.rotation.x = 0.02;
-      modelRef.current.rotation.y = Math.sin(t * 2.5) * 0.12;
-      modelRef.current.rotation.z = 0;
+      const step = t * 8.5;
+      modelRef.current.position.y = Math.abs(Math.sin(step)) * 0.03;
+      modelRef.current.rotation.x = 0.06;
+      modelRef.current.rotation.z = Math.sin(step) * 0.03;
     } else {
-      // Natural Autonomous Idle Behaviors:
-      // 1. Continuous breathing rhythm
-      const breathe = Math.sin(t * 2.0) * 0.012;
-      // 2. Subtle weight shift
-      const weightShift = Math.sin(t * 0.8) * 0.02;
+      // Elegant standing posture with breathing
+      modelRef.current.position.y = Math.sin(t * 2.0) * 0.015;
+      modelRef.current.rotation.y = Math.sin(t * 0.7) * 0.06;
+      modelRef.current.rotation.x = 0;
+    }
 
-      // 3. Periodic character-specific gestures (every ~6-8 seconds)
-      const cycle = t % 7.5;
-      let glanceY = 0;
-      let gestureX = 0;
-
-      if (cycle > 5.5) {
-        // Natural look around glance
-        glanceY = Math.sin((cycle - 5.5) * Math.PI) * 0.14;
-      }
-
-      if (appearance.includes("luffy") && cycle > 3.0 && cycle < 4.5) {
-        // Luffy joyful laugh / head tilt
-        gestureX = -Math.sin((cycle - 3.0) * Math.PI * 0.67) * 0.08;
-      } else if (appearance === "zoro" && cycle > 2.0 && cycle < 3.5) {
-        // Zoro posture check / swordsman adjustment
-        glanceY = 0.08;
-      } else if (appearance === "chopper" && cycle > 1.5 && cycle < 3.0) {
-        // Chopper curious hop
-        gestureX = Math.sin((cycle - 1.5) * Math.PI * 0.67) * 0.04;
-      } else if (appearance === "franky") {
-        // Franky solid upright stance
-        gestureX = 0;
-      }
-
-      modelRef.current.position.y = breathe;
-      modelRef.current.rotation.x = gestureX;
-      modelRef.current.rotation.y = glanceY;
-      modelRef.current.rotation.z = weightShift;
+    if (zeusCloudRef.current) {
+      zeusCloudRef.current.position.y = 2.45 + Math.sin(t * 3.0) * 0.12;
+      zeusCloudRef.current.rotation.y = t * 0.6;
     }
   });
 
@@ -578,42 +694,156 @@ function StandardCharacterMesh({
     <group ref={modelRef}>
       <primitive object={normalizedGroup} />
 
-      {/* Signature Gear & Character Equipments */}
-      {(appearance === "luffy-gear5" || appearance === "captain") && <LuffyHakiVFX />}
-      {appearance === "zoro" && (
-        <>
-          <ZoroBladeVFX />
-          {/* Zoro's 3 Attached Katanas & Sheaths */}
-          <ZoroThreeSwords isWorking={status === "working"} />
-        </>
-      )}
-      {appearance === "brook" && <BrookNotesVFX />}
-      {appearance === "chopper" && <ChopperSakuraVFX />}
-
-      {/* Haki / Power Aura Sparkles */}
-      {status === "working" ? (
-        <Sparkles
-          count={35}
-          scale={spec.targetHeight * 1.3}
-          size={4.5}
-          speed={1.4}
-          color={spec.auraColor}
-          opacity={0.9}
-        />
-      ) : (
-        <Sparkles
-          count={10}
-          scale={spec.targetHeight * 1.1}
-          size={2.2}
-          speed={0.5}
-          color={spec.auraColor}
-          opacity={0.5}
-        />
-      )}
+      {/* Miniature Floating Zeus Stormcloud with Lightning */}
+      <group ref={zeusCloudRef} position={[0.4, 2.45, 0.2]}>
+        <mesh>
+          <sphereGeometry args={[0.24, 12, 12]} />
+          <meshStandardMaterial color="#334155" roughness={0.9} />
+        </mesh>
+        <mesh position={[-0.15, -0.04, 0]}>
+          <sphereGeometry args={[0.18, 10, 10]} />
+          <meshStandardMaterial color="#475569" roughness={0.9} />
+        </mesh>
+        <mesh position={[0.16, -0.02, 0]}>
+          <sphereGeometry args={[0.19, 10, 10]} />
+          <meshStandardMaterial color="#475569" roughness={0.9} />
+        </mesh>
+        <Sparkles count={25} scale={1.5} size={3.8} speed={1.8} color="#facc15" opacity={0.95} />
+        <pointLight color="#facc15" intensity={2.8} distance={5} />
+      </group>
     </group>
   );
 }
 
+// ============================================================================
+// 7. BROOK (SOUL KING) ANIMATED COMPONENT
+// Violin Performance, Floating Melody Notes, Soul Solid Ice Mist
+// ============================================================================
+function BrookAnimatedCharacter({
+  spec,
+  status,
+  isMoving,
+}: {
+  spec: any;
+  status?: WorldAgentStatus;
+  isMoving?: boolean;
+}) {
+  const { scene } = (useGLTF as any)(spec.url);
+  const modelRef = useRef<THREE.Group>(null);
+  const notesRef = useRef<THREE.Group>(null);
+
+  const normalizedGroup = useMemo(() => {
+    return prepareAndNormalizeCharacter(scene, spec.targetHeight, spec.rotationX || 0);
+  }, [scene, spec]);
+
+  useFrame((state) => {
+    if (!modelRef.current) return;
+    const t = state.clock.getElapsedTime();
+
+    if (isMoving) {
+      const step = t * 8.0;
+      modelRef.current.position.y = Math.abs(Math.sin(step)) * 0.05;
+      modelRef.current.rotation.z = Math.sin(step) * 0.04;
+    } else {
+      // Lively musical swaying while playing violin
+      modelRef.current.rotation.z = Math.sin(t * 3.2) * 0.05;
+      modelRef.current.position.y = Math.abs(Math.sin(t * 3.2)) * 0.03;
+    }
+
+    if (notesRef.current) {
+      notesRef.current.position.y = 2.9 + Math.sin(t * 2.0) * 0.2;
+      notesRef.current.rotation.y = t * 0.8;
+    }
+  });
+
+  return (
+    <group ref={modelRef}>
+      <primitive object={normalizedGroup} />
+
+      {/* Floating 3D Musical Melody */}
+      <group ref={notesRef}>
+        <Html position={[-0.45, 0, 0]} center transform distanceFactor={14}>
+          <span className="text-cyan-300 text-2xl font-bold select-none pointer-events-none drop-shadow-[0_0_8px_#22d3ee]">
+            ♪
+          </span>
+        </Html>
+        <Html position={[0.45, 0.35, 0]} center transform distanceFactor={14}>
+          <span className="text-cyan-200 text-2xl font-bold select-none pointer-events-none drop-shadow-[0_0_10px_#67e8f9]">
+            ♫
+          </span>
+        </Html>
+        <Sparkles count={20} scale={2.8} size={3.0} speed={0.8} color="#38bdf8" />
+      </group>
+    </group>
+  );
+}
+
+// ============================================================================
+// 8. JINBE, USOPP, ROBIN ANIMATED COMPONENTS
+// ============================================================================
+function OtherCrewAnimatedCharacter({
+  appearance,
+  spec,
+  status,
+  isMoving,
+}: {
+  appearance: string;
+  spec: any;
+  status?: WorldAgentStatus;
+  isMoving?: boolean;
+}) {
+  const { scene } = (useGLTF as any)(spec.url);
+  const modelRef = useRef<THREE.Group>(null);
+
+  const normalizedGroup = useMemo(() => {
+    return prepareAndNormalizeCharacter(scene, spec.targetHeight, spec.rotationX || 0);
+  }, [scene, spec]);
+
+  useFrame((state) => {
+    if (!modelRef.current) return;
+    const t = state.clock.getElapsedTime();
+
+    if (isMoving) {
+      const step = t * 8.5;
+      modelRef.current.position.y = Math.abs(Math.sin(step)) * 0.04;
+      modelRef.current.rotation.x = 0.07;
+      modelRef.current.rotation.z = Math.sin(step) * 0.035;
+    } else {
+      if (appearance === "jinbe") {
+        // Fishman Karate breathing kata
+        modelRef.current.position.y = Math.sin(t * 1.6) * 0.02;
+        modelRef.current.rotation.y = Math.sin(t * 0.8) * 0.06;
+      } else if (appearance === "usopp") {
+        // Sniper aiming scan
+        modelRef.current.rotation.y = Math.sin(t * 0.9) * 0.22;
+        modelRef.current.rotation.x = 0.04;
+      } else if (appearance === "robin") {
+        // Cien Fleurs graceful calm
+        modelRef.current.position.y = Math.sin(t * 1.8) * 0.015;
+        modelRef.current.rotation.y = Math.sin(t * 0.5) * 0.05;
+      }
+    }
+  });
+
+  return (
+    <group ref={modelRef}>
+      <primitive object={normalizedGroup} />
+      <Sparkles
+        count={15}
+        scale={spec.targetHeight * 1.1}
+        size={2.5}
+        speed={0.6}
+        color={spec.auraColor}
+        opacity={0.6}
+      />
+    </group>
+  );
+}
+
+// ============================================================================
+// MAIN AGENT CHARACTER MODEL ROUTER
+// Routes each Straw Hat member to their dedicated animated component
+// ============================================================================
 export default function AgentCharacterModel({
   appearance,
   color,
@@ -622,20 +852,33 @@ export default function AgentCharacterModel({
 }: AgentCharacterModelProps) {
   const spec = CHARACTER_SPECS[appearance] || CHARACTER_SPECS["luffy-gear5"];
 
-  // Sanji uses genuine skeletal animations (30 clips)
+  if (appearance === "luffy-gear5" || appearance === "captain") {
+    return <LuffyAnimatedCharacter spec={spec} status={status} isMoving={isMoving} />;
+  }
+  if (appearance === "zoro") {
+    return <ZoroAnimatedCharacter spec={spec} status={status} isMoving={isMoving} />;
+  }
+  if (appearance === "franky") {
+    return <FrankyAnimatedCharacter spec={spec} status={status} isMoving={isMoving} />;
+  }
   if (appearance === "sanji") {
     return <SanjiAnimatedCharacter spec={spec} status={status} isMoving={isMoving} />;
   }
-
-  // Nami uses procedural skeletal kinematics (250 joints)
+  if (appearance === "chopper") {
+    return <ChopperAnimatedCharacter spec={spec} status={status} isMoving={isMoving} />;
+  }
   if (appearance === "nami") {
     return <NamiAnimatedCharacter spec={spec} status={status} isMoving={isMoving} />;
   }
+  if (appearance === "brook") {
+    return <BrookAnimatedCharacter spec={spec} status={status} isMoving={isMoving} />;
+  }
 
-  // All other Straw Hat members use standard technical procedural locomotion & idle behavior
+  // Jinbe, Usopp, Robin
   return (
-    <StandardCharacterMesh
+    <OtherCrewAnimatedCharacter
       appearance={appearance}
+      spec={spec}
       status={status}
       isMoving={isMoving}
     />

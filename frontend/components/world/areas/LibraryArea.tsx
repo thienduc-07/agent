@@ -1,9 +1,59 @@
 "use client";
 
-import React, { useMemo } from "react";
+import React, { useMemo, useRef } from "react";
 import * as THREE from "three";
+import { useFrame } from "@react-three/fiber";
 import { Sparkles, Float } from "@react-three/drei";
 import { useWorldStore } from "@/store/worldStore";
+
+// Single Animated Lotus Arm that ripples in gentle wave motion
+function BloomingLotusArm({ a, idx }: { a: any; idx: number }) {
+  const armRef = useRef<THREE.Group>(null);
+
+  useFrame((state) => {
+    if (armRef.current) {
+      const t = state.clock.getElapsedTime();
+      const waveZ = Math.sin(t * 2.2 + idx * 0.48) * 0.08;
+      const waveX = Math.cos(t * 1.8 + idx * 0.42) * 0.06;
+      armRef.current.rotation.z = a.rotZ + waveZ;
+      armRef.current.rotation.x = a.rotX + waveX;
+    }
+  });
+
+  return (
+    <group
+      ref={armRef}
+      position={[a.x, 0.1, a.z]}
+      rotation={[a.rotX, 0, a.rotZ]}
+      scale={a.scale}
+    >
+      {/* Smooth Forearm */}
+      <mesh position={[0, 1.35, 0]} castShadow>
+        <cylinderGeometry args={[0.22, 0.3, 2.7, 12]} />
+        <meshStandardMaterial color="#d474b8" roughness={0.35} />
+      </mesh>
+      {/* Natural Palm */}
+      <mesh position={[0, 2.85, 0]} castShadow>
+        <boxGeometry args={[0.55, 0.55, 0.2]} />
+        <meshStandardMaterial color="#db7dbd" roughness={0.35} />
+      </mesh>
+      {/* 5 Distinct Spread Fingers (Lotus Petal Flare) */}
+      {[-0.2, -0.1, 0.0, 0.1, 0.2].map((fx, fIdx) => (
+        <mesh
+          key={`finger-${fIdx}`}
+          position={[fx, 3.45 + (fIdx === 2 ? 0.22 : fIdx === 1 || fIdx === 3 ? 0.12 : 0), 0.05]}
+          rotation={[0.12, 0, fx * 0.65]}
+          castShadow
+        >
+          <cylinderGeometry args={[0.045, 0.06, 0.8, 8]} />
+          <meshStandardMaterial color="#e598cc" roughness={0.3} />
+        </mesh>
+      ))}
+      {/* Purple Fleur Light */}
+      <pointLight position={[0, 3.2, 0.2]} color="#e879f9" intensity={1.2} distance={4} />
+    </group>
+  );
+}
 
 // Robin's 10 Giant Blooming Pink-Purple Arms (Mil Fleur / Gigantesco Mano - Exactly matching Image 2)
 function GiantFlowerArms({ position }: { position: [number, number, number] }) {
@@ -33,37 +83,7 @@ function GiantFlowerArms({ position }: { position: [number, number, number] }) {
 
       {/* 10 Curved Blooming Arms (#d474b8) with 5 Natural Spread Fingers */}
       {arms.map((a, idx) => (
-        <group
-          key={`blooming-arm-${idx}`}
-          position={[a.x, 0.1, a.z]}
-          rotation={[a.rotX, 0, a.rotZ]}
-          scale={a.scale}
-        >
-          {/* Smooth Forearm */}
-          <mesh position={[0, 1.35, 0]} castShadow>
-            <cylinderGeometry args={[0.22, 0.3, 2.7, 12]} />
-            <meshStandardMaterial color="#d474b8" roughness={0.35} />
-          </mesh>
-          {/* Natural Palm */}
-          <mesh position={[0, 2.85, 0]} castShadow>
-            <boxGeometry args={[0.55, 0.55, 0.2]} />
-            <meshStandardMaterial color="#db7dbd" roughness={0.35} />
-          </mesh>
-          {/* 5 Distinct Spread Fingers (Lotus Petal Flare) */}
-          {[-0.2, -0.1, 0.0, 0.1, 0.2].map((fx, fIdx) => (
-            <mesh
-              key={`finger-${fIdx}`}
-              position={[fx, 3.45 + (fIdx === 2 ? 0.22 : fIdx === 1 || fIdx === 3 ? 0.12 : 0), 0.05]}
-              rotation={[0.12, 0, fx * 0.65]}
-              castShadow
-            >
-              <cylinderGeometry args={[0.045, 0.06, 0.8, 8]} />
-              <meshStandardMaterial color="#e598cc" roughness={0.3} />
-            </mesh>
-          ))}
-          {/* Purple Fleur Light */}
-          <pointLight position={[0, 3.2, 0.2]} color="#e879f9" intensity={1.2} distance={4} />
-        </group>
+        <BloomingLotusArm key={`blooming-arm-${idx}`} a={a} idx={idx} />
       ))}
     </group>
   );
