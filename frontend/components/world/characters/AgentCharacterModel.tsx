@@ -95,6 +95,161 @@ export const CHARACTER_SPECS: Record<
 };
 
 /**
+ * Procedural Arm & Posture Relaxation Engine
+ * Permanently removes the rigid T-pose / horizontal outstretched arm syndrome for:
+ * 1. Rigged SkinnedMeshes (Nami with 250 bones, Sanji with 30 clips)
+ * 2. Unskinned Static Humanoid Geometries (Luffy, Zoro, Franky, Chopper, Robin, Brook, Jinbe, Usopp)
+ */
+function relaxCharacterLimbs(
+  container: THREE.Group,
+  targetHeight: number,
+  appearance?: string
+) {
+  container.updateMatrixWorld(true);
+  const H = targetHeight;
+
+  // 1. Skinned / Rigged Humanoid Models (Nami)
+  let hasBones = false;
+  container.traverse((obj) => {
+    if ((obj as THREE.Bone).isBone) {
+      hasBones = true;
+      const boneName = obj.name.toLowerCase();
+
+      // Nami arm posing
+      if (boneName.includes("arm_left_shoulder_2") || boneName.includes("arm_left_shoulder_1")) {
+        obj.rotation.x = -1.18; // ~68 deg downward
+        obj.rotation.z = 0.22;  // slight inward tuck
+      } else if (boneName.includes("arm_right_shoulder_2") || boneName.includes("arm_right_shoulder_1")) {
+        obj.rotation.x = 1.18;  // ~68 deg downward
+        obj.rotation.z = -0.22; // slight inward tuck
+      } else if (boneName.includes("arm_left_elbow")) {
+        obj.rotation.z = 0.35;  // natural forward bend
+      } else if (boneName.includes("arm_right_elbow")) {
+        obj.rotation.z = -0.35;
+      }
+    }
+  });
+
+  if (hasBones) {
+    container.traverse((child) => {
+      if ((child as THREE.SkinnedMesh).isSkinnedMesh) {
+        (child as THREE.SkinnedMesh).skeleton.update();
+      }
+    });
+  }
+
+  // 2. Unskinned Static Mesh Procedural Vertex Relaxation
+  // Humanoid anatomical proportions in canonical frame:
+  let Xs = 0.165 * H;
+  let Ys = 0.72 * H;
+  let downAngle = 1.18; // ~68 degrees downward
+
+  if (appearance === "franky") {
+    Xs = 0.23 * H;
+    Ys = 0.74 * H;
+    downAngle = 1.12; // ~64 degrees for massive cyborg arms
+  } else if (appearance === "jinbe") {
+    Xs = 0.24 * H;
+    Ys = 0.73 * H;
+    downAngle = 1.15;
+  } else if (appearance === "chopper") {
+    Xs = 0.18 * H;
+    Ys = 0.62 * H;
+    downAngle = 1.10;
+  }
+
+  const elbowDist = 0.17 * H;
+  const invMatrix = new THREE.Matrix4();
+  const vLocal = new THREE.Vector3();
+  const vCanon = new THREE.Vector3();
+
+  container.traverse((obj) => {
+    const mesh = obj as THREE.Mesh;
+    if (!mesh.isMesh || (mesh as THREE.SkinnedMesh).isSkinnedMesh || !mesh.geometry) return;
+
+    // Skip cloud aura ribbon or eye decals that shouldn't bend with arms
+    const mName = (mesh.name || "").toLowerCase();
+    if (mName.includes("aura") || mName.includes("cloud") || mName.includes("eyes")) return;
+
+    const geo = mesh.geometry.clone();
+    mesh.geometry = geo;
+    const pos = geo.attributes.position;
+    if (!pos || pos.count === 0) return;
+
+    mesh.updateMatrixWorld(true);
+    invMatrix.copy(mesh.matrixWorld).invert();
+
+    let modified = false;
+
+    for (let i = 0; i < pos.count; i++) {
+      vLocal.set(pos.getX(i), pos.getY(i), pos.getZ(i));
+      vCanon.copy(vLocal).applyMatrix4(mesh.matrixWorld);
+
+      const x = vCanon.x;
+      const y = vCanon.y;
+      const z = vCanon.z;
+
+      const side = x >= 0 ? 1 : -1;
+      const distX = Math.abs(x) - Xs;
+
+      // Arm selection corridor:
+      // 1. Further out than shoulder seam
+      // 2. Height between waist (0.38H) and top of shoulder/neck (0.84H)
+      // 3. For lower body (y < 0.48H), must be safely outside hips (distX > 0.05H)
+      const isArmHeight = y > 0.38 * H && y < 0.84 * H;
+      const isOutsideShoulder = distX > 0.005 * H;
+      const isClearOfHips = y >= 0.48 * H || distX > 0.05 * H;
+
+      if (isArmHeight && isOutsideShoulder && isClearOfHips) {
+        const dy = y - Ys;
+        const armDist = Math.sqrt(distX * distX + dy * dy);
+
+        // Smoothstep blend near shoulder root (0 to 0.08 * H) to prevent tearing at the seam
+        const blendDist = 0.08 * H;
+        const t = Math.min(Math.max(distX / blendDist, 0), 1);
+        const wShoulder = t * t * (3 - 2 * t);
+        const curDownAngle = downAngle * wShoulder;
+
+        // Rotate in XY plane downward towards hips
+        const dx = distX;
+        let dxNew = dx * Math.cos(curDownAngle) + dy * Math.sin(curDownAngle);
+        let dyNew = -dx * Math.sin(curDownAngle) + dy * Math.cos(curDownAngle);
+
+        // Natural forearm & elbow bend forward
+        let dzNew = 0;
+        if (armDist > elbowDist) {
+          const elbowT = Math.min(Math.max((armDist - elbowDist) / (0.12 * H), 0), 1);
+          const wElbow = elbowT * elbowT * (3 - 2 * elbowT);
+
+          // Forearm swings forward along +Z so hands rest in front of thighs
+          dzNew = 0.065 * H * wElbow;
+          // Tuck hands slightly inward towards thighs
+          dxNew *= (1.0 - 0.12 * wElbow);
+          dyNew -= 0.02 * H * wElbow;
+        }
+
+        const newCanonX = side * (Xs + dxNew);
+        const newCanonY = Ys + dyNew;
+        const newCanonZ = z + dzNew;
+
+        vCanon.set(newCanonX, newCanonY, newCanonZ);
+        vCanon.applyMatrix4(invMatrix);
+
+        pos.setXYZ(i, vCanon.x, vCanon.y, vCanon.z);
+        modified = true;
+      }
+    }
+
+    if (modified) {
+      pos.needsUpdate = true;
+      geo.computeVertexNormals();
+      geo.computeBoundingBox();
+      geo.computeBoundingSphere();
+    }
+  });
+}
+
+/**
  * Universal Master Normalizer
  * - Applies rotationX to orient models upright (Franky +90 deg brings head from -Z to +Y)
  * - Relaxes T-pose horizontal arms into a natural anime stance
@@ -103,7 +258,8 @@ export const CHARACTER_SPECS: Record<
 export function prepareAndNormalizeCharacter(
   rawScene: THREE.Object3D,
   targetHeight: number,
-  rotationX = 0
+  rotationX = 0,
+  appearance?: string
 ): THREE.Group {
   const clone = SkeletonUtils.clone(rawScene);
   applyAnimeCelShading(clone);
@@ -115,53 +271,7 @@ export function prepareAndNormalizeCharacter(
   wrapper.add(clone);
   wrapper.updateMatrixWorld(true);
 
-  // 1. Natural Arm Relaxation (Removes T-pose / A-pose)
-  clone.traverse((obj) => {
-    if ((obj as THREE.Mesh).isMesh) {
-      obj.castShadow = true;
-      obj.receiveShadow = true;
-    }
-    if ((obj as THREE.Bone).isBone) {
-      const boneName = obj.name.toLowerCase();
-      const isLeftUpperArm =
-        (boneName.includes("left") || boneName.endsWith("_l") || boneName.endsWith(".l")) &&
-        (boneName.includes("arm") || boneName.includes("shoulder")) &&
-        !boneName.includes("fore") &&
-        !boneName.includes("lower") &&
-        !boneName.includes("hand") &&
-        !boneName.includes("finger");
-
-      const isRightUpperArm =
-        (boneName.includes("right") || boneName.endsWith("_r") || boneName.endsWith(".r")) &&
-        (boneName.includes("arm") || boneName.includes("shoulder")) &&
-        !boneName.includes("fore") &&
-        !boneName.includes("lower") &&
-        !boneName.includes("hand") &&
-        !boneName.includes("finger");
-
-      if (isLeftUpperArm && Math.abs(obj.rotation.z) < 0.3) {
-        obj.rotation.z = -1.15;
-        obj.rotation.y = 0.2;
-      }
-      if (isRightUpperArm && Math.abs(obj.rotation.z) < 0.3) {
-        obj.rotation.z = 1.15;
-        obj.rotation.y = -0.2;
-      }
-
-      // Natural slight elbow bend
-      const isForeArm = boneName.includes("fore") || boneName.includes("elbow");
-      if (isForeArm) {
-        if (boneName.includes("left") || boneName.endsWith("_l")) {
-          obj.rotation.y = 0.35;
-        } else if (boneName.includes("right") || boneName.endsWith("_r")) {
-          obj.rotation.y = -0.35;
-        }
-      }
-    }
-  });
-
-  // 2. Compute true bounding box and scale to target height
-  wrapper.updateMatrixWorld(true);
+  // 1. Initial Scale to target height
   let box = new THREE.Box3().setFromObject(wrapper);
   let size = new THREE.Vector3();
   box.getSize(size);
@@ -185,13 +295,29 @@ export function prepareAndNormalizeCharacter(
   wrapper.scale.setScalar(uniformScale);
   wrapper.updateMatrixWorld(true);
 
-  // 3. Align feet to exact ground surface (min.y = 0)
-  const finalBox = new THREE.Box3().setFromObject(wrapper);
-  const finalCenter = new THREE.Vector3();
-  finalBox.getCenter(finalCenter);
+  // Align feet to ground surface (min.y = 0) and center at (0, 0)
+  const centerBox = new THREE.Box3().setFromObject(wrapper);
+  const center = new THREE.Vector3();
+  centerBox.getCenter(center);
+  wrapper.position.set(-center.x, -centerBox.min.y, -center.z);
 
-  wrapper.position.set(-finalCenter.x, -finalBox.min.y, -finalCenter.z);
-  return wrapper;
+  // Wrap in canonical master container
+  const container = new THREE.Group();
+  container.add(wrapper);
+  container.updateMatrixWorld(true);
+
+  // 2. Relax limbs from T-pose to natural anime posture
+  relaxCharacterLimbs(container, targetHeight, appearance);
+
+  // 3. Final ground alignment after limb deformation
+  container.updateMatrixWorld(true);
+  const finalBox = new THREE.Box3().setFromObject(container);
+  if (finalBox.min.y < -0.01) {
+    wrapper.position.y += Math.abs(finalBox.min.y);
+    container.updateMatrixWorld(true);
+  }
+
+  return container;
 }
 
 // ============================================================================
@@ -212,7 +338,7 @@ function LuffyAnimatedCharacter({
   const cloudAuraRef = useRef<THREE.Mesh>(null);
 
   const normalizedGroup = useMemo(() => {
-    return prepareAndNormalizeCharacter(scene, spec.targetHeight, spec.rotationX || 0);
+    return prepareAndNormalizeCharacter(scene, spec.targetHeight, spec.rotationX || 0, "luffy-gear5");
   }, [scene, spec]);
 
   useFrame((state) => {
@@ -360,7 +486,7 @@ function ZoroAnimatedCharacter({
   const slashWaveRef = useRef<THREE.Mesh>(null);
 
   const normalizedGroup = useMemo(() => {
-    return prepareAndNormalizeCharacter(scene, spec.targetHeight, spec.rotationX || 0);
+    return prepareAndNormalizeCharacter(scene, spec.targetHeight, spec.rotationX || 0, "zoro");
   }, [scene, spec]);
 
   const slashCycle = useRef(0);
@@ -443,7 +569,7 @@ function FrankyAnimatedCharacter({
 
   const normalizedGroup = useMemo(() => {
     // Franky MUST have rotationX = Math.PI / 2 to stand upright on his feet!
-    return prepareAndNormalizeCharacter(scene, spec.targetHeight, Math.PI / 2);
+    return prepareAndNormalizeCharacter(scene, spec.targetHeight, Math.PI / 2, "franky");
   }, [scene, spec]);
 
   useFrame((state) => {
@@ -607,7 +733,7 @@ function ChopperAnimatedCharacter({
   const modelRef = useRef<THREE.Group>(null);
 
   const normalizedGroup = useMemo(() => {
-    return prepareAndNormalizeCharacter(scene, spec.targetHeight, spec.rotationX || 0);
+    return prepareAndNormalizeCharacter(scene, spec.targetHeight, spec.rotationX || 0, "chopper");
   }, [scene, spec]);
 
   useFrame((state) => {
@@ -665,7 +791,7 @@ function NamiAnimatedCharacter({
   const zeusCloudRef = useRef<THREE.Group>(null);
 
   const normalizedGroup = useMemo(() => {
-    return prepareAndNormalizeCharacter(scene, spec.targetHeight, spec.rotationX || 0);
+    return prepareAndNormalizeCharacter(scene, spec.targetHeight, spec.rotationX || 0, "nami");
   }, [scene, spec]);
 
   useFrame((state) => {
@@ -733,7 +859,7 @@ function BrookAnimatedCharacter({
   const notesRef = useRef<THREE.Group>(null);
 
   const normalizedGroup = useMemo(() => {
-    return prepareAndNormalizeCharacter(scene, spec.targetHeight, spec.rotationX || 0);
+    return prepareAndNormalizeCharacter(scene, spec.targetHeight, spec.rotationX || 0, "brook");
   }, [scene, spec]);
 
   useFrame((state) => {
@@ -779,24 +905,24 @@ function BrookAnimatedCharacter({
 }
 
 // ============================================================================
-// 8. JINBE, USOPP, ROBIN ANIMATED COMPONENTS
+// 8. NICO ROBIN (DEVIL CHILD) ANIMATED COMPONENT
+// Cien Fleurs Blooming Petals, Crossed Arms Gesture, Violet Hana Hana Aura
 // ============================================================================
-function OtherCrewAnimatedCharacter({
-  appearance,
+function RobinAnimatedCharacter({
   spec,
   status,
   isMoving,
 }: {
-  appearance: string;
   spec: any;
   status?: WorldAgentStatus;
   isMoving?: boolean;
 }) {
   const { scene } = (useGLTF as any)(spec.url);
   const modelRef = useRef<THREE.Group>(null);
+  const petalsRef = useRef<THREE.Group>(null);
 
   const normalizedGroup = useMemo(() => {
-    return prepareAndNormalizeCharacter(scene, spec.targetHeight, spec.rotationX || 0);
+    return prepareAndNormalizeCharacter(scene, spec.targetHeight, spec.rotationX || 0, "robin");
   }, [scene, spec]);
 
   useFrame((state) => {
@@ -805,37 +931,144 @@ function OtherCrewAnimatedCharacter({
 
     if (isMoving) {
       const step = t * 8.5;
-      modelRef.current.position.y = Math.abs(Math.sin(step)) * 0.04;
-      modelRef.current.rotation.x = 0.07;
-      modelRef.current.rotation.z = Math.sin(step) * 0.035;
+      modelRef.current.position.y = Math.abs(Math.sin(step)) * 0.035;
+      modelRef.current.rotation.x = 0.06;
+      modelRef.current.rotation.z = Math.sin(step) * 0.03;
     } else {
-      if (appearance === "jinbe") {
-        // Fishman Karate breathing kata
-        modelRef.current.position.y = Math.sin(t * 1.6) * 0.02;
-        modelRef.current.rotation.y = Math.sin(t * 0.8) * 0.06;
-      } else if (appearance === "usopp") {
-        // Sniper aiming scan
-        modelRef.current.rotation.y = Math.sin(t * 0.9) * 0.22;
-        modelRef.current.rotation.x = 0.04;
-      } else if (appearance === "robin") {
-        // Cien Fleurs graceful calm
-        modelRef.current.position.y = Math.sin(t * 1.8) * 0.015;
-        modelRef.current.rotation.y = Math.sin(t * 0.5) * 0.05;
-      }
+      // Poised calm elegance
+      modelRef.current.position.y = Math.sin(t * 1.8) * 0.015;
+      modelRef.current.rotation.y = Math.sin(t * 0.5) * 0.04;
+      modelRef.current.rotation.x = 0;
+    }
+
+    if (petalsRef.current) {
+      petalsRef.current.rotation.y = t * 0.8;
+      petalsRef.current.position.y = 1.3 + Math.sin(t * 2.5) * 0.08;
     }
   });
 
   return (
     <group ref={modelRef}>
       <primitive object={normalizedGroup} />
-      <Sparkles
-        count={15}
-        scale={spec.targetHeight * 1.1}
-        size={2.5}
-        speed={0.6}
-        color={spec.auraColor}
-        opacity={0.6}
-      />
+
+      {/* Hana Hana no Mi Floating Petal Ring */}
+      <group ref={petalsRef}>
+        {[0, 1, 2, 3, 4, 5].map((idx) => {
+          const angle = (idx / 6) * Math.PI * 2;
+          return (
+            <mesh key={`robin-petal-${idx}`} position={[Math.cos(angle) * 0.7, 0, Math.sin(angle) * 0.7]} rotation={[0.4, angle, 0.2]}>
+              <boxGeometry args={[0.08, 0.02, 0.16]} />
+              <meshStandardMaterial color="#ec4899" emissive="#d946ef" emissiveIntensity={0.6} />
+            </mesh>
+          );
+        })}
+      </group>
+
+      <Sparkles count={25} scale={2.4} size={3.2} speed={1.1} color="#d946ef" opacity={0.85} />
+      <pointLight position={[0, 1.4, 0]} color="#d946ef" intensity={2.2} distance={5} />
+    </group>
+  );
+}
+
+// ============================================================================
+// 9. JINBE (KNIGHT OF THE SEA) ANIMATED COMPONENT
+// Fishman Karate Stance, Swirling Water Vortex Ring, Ocean Spray VFX
+// ============================================================================
+function JinbeAnimatedCharacter({
+  spec,
+  status,
+  isMoving,
+}: {
+  spec: any;
+  status?: WorldAgentStatus;
+  isMoving?: boolean;
+}) {
+  const { scene } = (useGLTF as any)(spec.url);
+  const modelRef = useRef<THREE.Group>(null);
+  const waterRingRef = useRef<THREE.Mesh>(null);
+
+  const normalizedGroup = useMemo(() => {
+    return prepareAndNormalizeCharacter(scene, spec.targetHeight, spec.rotationX || 0, "jinbe");
+  }, [scene, spec]);
+
+  useFrame((state) => {
+    if (!modelRef.current) return;
+    const t = state.clock.getElapsedTime();
+
+    if (isMoving) {
+      const step = t * 7.5;
+      modelRef.current.position.y = Math.abs(Math.sin(step)) * 0.045;
+      modelRef.current.rotation.x = 0.07;
+    } else {
+      // Powerful martial arts breathing kata
+      modelRef.current.position.y = Math.sin(t * 1.5) * 0.018;
+      modelRef.current.rotation.y = Math.sin(t * 0.7) * 0.04;
+    }
+
+    if (waterRingRef.current) {
+      waterRingRef.current.rotation.z = t * 2.2;
+      waterRingRef.current.scale.setScalar(1.0 + Math.sin(t * 3.0) * 0.08);
+    }
+  });
+
+  return (
+    <group ref={modelRef}>
+      <primitive object={normalizedGroup} />
+
+      {/* Fishman Karate Water Vortex Torus */}
+      <mesh ref={waterRingRef} position={[0, 1.35, 0.4]} rotation={[Math.PI / 3, 0, 0]}>
+        <torusGeometry args={[0.55, 0.045, 12, 32]} />
+        <meshStandardMaterial color="#0284c7" emissive="#38bdf8" emissiveIntensity={0.7} roughness={0.1} transparent opacity={0.8} />
+      </mesh>
+
+      <Sparkles count={25} scale={2.8} size={3.8} speed={1.2} color="#38bdf8" opacity={0.9} />
+      <pointLight position={[0, 1.35, 0.4]} color="#0284c7" intensity={2.8} distance={6} />
+    </group>
+  );
+}
+
+// ============================================================================
+// 10. GOD USOPP (SNIPER KING) ANIMATED COMPONENT
+// Sniper Goggle Scan, Kuro Kabuto Ready, Firebird Star Sparks
+// ============================================================================
+function UsoppAnimatedCharacter({
+  spec,
+  status,
+  isMoving,
+}: {
+  spec: any;
+  status?: WorldAgentStatus;
+  isMoving?: boolean;
+}) {
+  const { scene } = (useGLTF as any)(spec.url);
+  const modelRef = useRef<THREE.Group>(null);
+
+  const normalizedGroup = useMemo(() => {
+    return prepareAndNormalizeCharacter(scene, spec.targetHeight, spec.rotationX || 0, "usopp");
+  }, [scene, spec]);
+
+  useFrame((state) => {
+    if (!modelRef.current) return;
+    const t = state.clock.getElapsedTime();
+
+    if (isMoving) {
+      const step = t * 9.5;
+      modelRef.current.position.y = Math.abs(Math.sin(step)) * 0.05;
+      modelRef.current.rotation.x = 0.09;
+      modelRef.current.rotation.z = Math.sin(step) * 0.04;
+    } else {
+      // Sniper scanning the horizon with Kabuto
+      modelRef.current.position.y = Math.sin(t * 2.0) * 0.015;
+      modelRef.current.rotation.y = Math.sin(t * 0.8) * 0.18;
+      modelRef.current.rotation.x = 0.03;
+    }
+  });
+
+  return (
+    <group ref={modelRef}>
+      <primitive object={normalizedGroup} />
+      <Sparkles count={20} scale={2.2} size={3.0} speed={1.3} color="#f97316" opacity={0.85} />
+      <pointLight position={[0, 1.3, 0]} color="#f97316" intensity={2.0} distance={5} />
     </group>
   );
 }
@@ -873,16 +1106,17 @@ export default function AgentCharacterModel({
   if (appearance === "brook") {
     return <BrookAnimatedCharacter spec={spec} status={status} isMoving={isMoving} />;
   }
+  if (appearance === "robin") {
+    return <RobinAnimatedCharacter spec={spec} status={status} isMoving={isMoving} />;
+  }
+  if (appearance === "jinbe") {
+    return <JinbeAnimatedCharacter spec={spec} status={status} isMoving={isMoving} />;
+  }
+  if (appearance === "usopp") {
+    return <UsoppAnimatedCharacter spec={spec} status={status} isMoving={isMoving} />;
+  }
 
-  // Jinbe, Usopp, Robin
-  return (
-    <OtherCrewAnimatedCharacter
-      appearance={appearance}
-      spec={spec}
-      status={status}
-      isMoving={isMoving}
-    />
-  );
+  return <LuffyAnimatedCharacter spec={spec} status={status} isMoving={isMoving} />;
 }
 
 // Preload all 10 Straw Hat character models
