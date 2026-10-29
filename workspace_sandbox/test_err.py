@@ -1,0 +1,1 @@
+raise ValueError('Grand Line Sea Beast Alert!')

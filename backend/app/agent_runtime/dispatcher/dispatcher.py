@@ -1,0 +1,470 @@
+import asyncio
+import logging
+from datetime import datetime
+from typing import Dict, Optional
+from sqlalchemy.orm import Session
+
+from backend.app.core.config import settings
+from backend.app.core.database import SessionLocal
+from backend.app.models.task import TaskModel
+from backend.app.models.task_step import TaskStepModel
+from backend.app.models.agent import AgentModel
+from backend.app.models.agent_event import AgentEventModel
+from backend.app.models.approval import ApprovalModel
+from backend.app.models.artifact import ArtifactModel
+from backend.app.agent_runtime.cancellation import CancellationToken, TaskCancelledException
+from backend.app.agent_runtime.llm.factory import get_llm_provider
+from backend.app.agent_runtime.tools.registry import default_tool_registry
+from backend.app.agent_runtime.policies.engine import policy_engine
+from backend.app.agent_runtime.verifier import result_verifier
+from backend.app.agent_runtime.planner.planner import Planner
+from backend.app.agent_runtime.executor import ExecutionLoop, ExecutionResult
+from backend.app.agent_runtime.general_agent import GENERAL_AGENT
+from backend.app.websocket_manager import ws_manager
+from backend.app.services.event_service import (
+    event_service,
+    TASK_STARTED,
+    TASK_STATUS_CHANGED,
+    TASK_COMPLETED,
+    TASK_FAILED,
+    TASK_CANCELLED,
+    AGENT_WORKING,
+    AGENT_IDLE,
+    AGENT_WAITING_FOR_APPROVAL,
+    AGENT_STATUS_CHANGED,
+    TASK_STEP_STARTED,
+    TASK_STEP_COMPLETED,
+    APPROVAL_REQUIRED,
+)
+from backend.app.agent_runtime.memory.context_builder import memory_context_builder
+from backend.app.agent_runtime.memory.extractor import memory_extractor
+
+logger = logging.getLogger("grandline.runtime.dispatcher")
+
+class TaskDispatcher:
+    def __init__(self):
+        self._running = False
+        self._loop_task: Optional[asyncio.Task] = None
+        self._active_cancellations: Dict[str, CancellationToken] = {}
+        self.planner = Planner(tool_registry=default_tool_registry)
+        self.executor = ExecutionLoop(
+            tool_registry=default_tool_registry,
+            policy_engine=policy_engine,
+            verifier=result_verifier,
+        )
+
+    def request_cancellation(self, task_id: str, reason: str = "User requested cancellation") -> bool:
+        token = self._active_cancellations.get(task_id)
+        if token:
+            token.cancel(reason)
+            logger.info(f"Cancellation dispatched for active task '{task_id}'")
+            return True
+        return False
+
+    def start(self) -> None:
+        if self._running:
+            return
+        self._running = True
+        self._loop_task = asyncio.create_task(self._poll_loop())
+        logger.info("Task Dispatcher worker started.")
+
+    async def stop(self) -> None:
+        self._running = False
+        if self._loop_task:
+            self._loop_task.cancel()
+            try:
+                await self._loop_task
+            except asyncio.CancelledError:
+                pass
+        logger.info("Task Dispatcher worker stopped.")
+
+    async def _poll_loop(self) -> None:
+        while self._running:
+            try:
+                claimed_task_id = self._claim_next_task()
+                if claimed_task_id:
+                    await self._process_task(claimed_task_id)
+                else:
+                    await asyncio.sleep(settings.DISPATCHER_POLL_INTERVAL)
+            except asyncio.CancelledError:
+                break
+            except Exception as e:
+                logger.error(f"Error in dispatcher loop: {str(e)}", exc_info=True)
+                await asyncio.sleep(settings.DISPATCHER_POLL_INTERVAL)
+
+    def _claim_next_task(self) -> Optional[str]:
+        db = SessionLocal()
+        try:
+            # Query oldest queued task
+            task = (
+                db.query(TaskModel)
+                .filter(TaskModel.status == "queued")
+                .order_by(TaskModel.created_at.asc())
+                .first()
+            )
+
+            if not task:
+                return None
+
+            task_id = task.id
+            task.status = "planning"
+            task.started_at = datetime.utcnow()
+            task.updated_at = datetime.utcnow()
+
+            agent = db.query(AgentModel).filter(AgentModel.id == task.assigned_agent_id).first()
+            if agent:
+                agent.status = "working"
+                agent.current_task_id = task.id
+                agent.updated_at = datetime.utcnow()
+
+            # Record transactional events with monotonic sequence_id
+            ev_task = event_service.create_event(
+                db=db,
+                event_type=TASK_STARTED,
+                agent_id=task.assigned_agent_id,
+                task_id=task.id,
+                payload={"status": "planning", "previous_status": "queued"},
+                commit=False
+            )
+            ev_agent = event_service.create_event(
+                db=db,
+                event_type=AGENT_WORKING,
+                agent_id=task.assigned_agent_id,
+                task_id=task.id,
+                payload={"status": "working", "task_id": task.id},
+                commit=False
+            )
+            db.commit()
+
+            # Broadcast envelopes to WebSocket clients
+            ws_manager.broadcast_sync(ev_task.to_envelope())
+            ws_manager.broadcast_sync(ev_agent.to_envelope())
+
+            logger.info(f"Dispatcher claimed task '{task_id}' (Agent: '{task.assigned_agent_id}')")
+            return task_id
+        except Exception as e:
+            db.rollback()
+            logger.error(f"Failed to claim task: {str(e)}")
+            return None
+        finally:
+            db.close()
+
+    async def _process_task(self, task_id: str, db: Optional[Session] = None) -> None:
+        token = CancellationToken()
+        self._active_cancellations[task_id] = token
+
+        close_db = False
+        if db is None:
+            db = SessionLocal()
+            close_db = True
+
+        try:
+            task = db.query(TaskModel).filter(TaskModel.id == task_id).first()
+            if not task:
+                return
+
+            if getattr(task, "task_type", "single") == "workflow":
+                from backend.app.agent_runtime.orchestrator.multi_agent_orchestrator import multi_agent_orchestrator
+                await multi_agent_orchestrator.execute_workflow(task_id=task.id, token=token, db=db)
+                return
+
+            agent = db.query(AgentModel).filter(AgentModel.id == task.assigned_agent_id).first()
+            agent_role = agent.role if agent else "General Fleet Agent"
+            agent_policy = GENERAL_AGENT.to_policy()
+            agent_policy.agent_id = task.assigned_agent_id
+
+            # Broadcast initial WebSocket update with event envelope
+            ev_thinking = event_service.create_event(
+                db,
+                event_type=event_service.EVENT_AGENT_STATUS_CHANGED,
+                agent_id=task.assigned_agent_id,
+                task_id=task.id,
+                payload={"status": "working", "sub_status": "THINKING"}
+            )
+            db.commit()
+            await ws_manager.broadcast_envelope(ev_thinking.to_envelope())
+
+            # Check cancellation
+            token.check()
+
+            # 1. Plan Generation Phase
+            llm_provider = get_llm_provider()
+            logger.info(f"Generating plan for task '{task_id}' via {settings.LLM_PROVIDER}")
+            plan = await self.planner.create_plan(
+                task_title=task.title,
+                task_description=task.description,
+                llm_provider=llm_provider,
+                agent_role=agent_role,
+            )
+
+            # Persist plan steps to database
+            # Clear any initial placeholder steps
+            db.query(TaskStepModel).filter(TaskStepModel.task_id == task.id).delete()
+            plan_step_dicts = []
+            for step in plan.steps:
+                db_step = TaskStepModel(
+                    task_id=task.id,
+                    step_index=step.step_index,
+                    title=step.title,
+                    description=step.description,
+                    status=step.status,
+                )
+                db.add(db_step)
+                plan_step_dicts.append({
+                    "step_index": step.step_index,
+                    "title": step.title,
+                    "description": step.description,
+                    "required_tool": step.required_tool,
+                })
+
+            task.status = "running"
+            task.updated_at = datetime.utcnow()
+            ev_plan = event_service.create_event(
+                db=db,
+                event_type="task.plan_created",
+                agent_id=task.assigned_agent_id,
+                task_id=task.id,
+                payload={"objective": plan.objective, "total_steps": len(plan.steps)},
+                commit=False
+            )
+            ev_step_start = event_service.create_event(
+                db=db,
+                event_type=TASK_STEP_STARTED,
+                agent_id=task.assigned_agent_id,
+                task_id=task.id,
+                payload={"step_index": 1, "title": plan.steps[0].title if plan.steps else "Execution"},
+                commit=False
+            )
+            db.commit()
+
+            await ws_manager.broadcast_envelope(ev_plan.to_envelope())
+            await ws_manager.broadcast_envelope(ev_step_start.to_envelope())
+
+            # Build memory context from persistent knowledge
+            memory_context = memory_context_builder.build_context(
+                db=db,
+                task_title=task.title,
+                task_description=task.description,
+                agent_id=task.assigned_agent_id,
+                task_id=task.id,
+            )
+
+            # 2. Execution Loop Phase
+            exec_result: ExecutionResult = await self.executor.run(
+                task_id=task.id,
+                agent_id=task.assigned_agent_id,
+                user_prompt=f"{task.title}\n{task.description}",
+                llm_provider=llm_provider,
+                agent_policy=agent_policy,
+                cancellation_token=token,
+                plan_steps=plan_step_dicts,
+                db=db,
+                memory_context=memory_context,
+            )
+
+            # 3. Finalize State in Database
+            task = db.query(TaskModel).filter(TaskModel.id == task_id).first()
+            if not task:
+                return
+
+            if exec_result.requires_approval and exec_result.approval_details:
+                # Transition to waiting_approval
+                task.status = "waiting_approval"
+                task.updated_at = datetime.utcnow()
+                if agent:
+                    agent.status = "waiting_approval"
+                    agent.updated_at = datetime.utcnow()
+
+                approval = ApprovalModel(
+                    task_id=task.id,
+                    action_type=exec_result.approval_details.get("action_type", "high_risk_action"),
+                    description=exec_result.approval_details.get("description", "Requires authorization"),
+                    status="pending",
+                    requested_at=datetime.utcnow(),
+                )
+                db.add(approval)
+                db.flush()
+
+                ev_appr = event_service.create_event(
+                    db=db,
+                    event_type=APPROVAL_REQUIRED,
+                    agent_id=task.assigned_agent_id,
+                    task_id=task.id,
+                    payload={"approval_id": approval.id, "action_type": approval.action_type, "description": approval.description},
+                    commit=False
+                )
+                ev_agent_wait = event_service.create_event(
+                    db=db,
+                    event_type=AGENT_WAITING_FOR_APPROVAL,
+                    agent_id=task.assigned_agent_id,
+                    task_id=task.id,
+                    payload={"status": "waiting_approval"},
+                    commit=False
+                )
+                db.commit()
+
+                await ws_manager.broadcast_envelope(ev_appr.to_envelope())
+                await ws_manager.broadcast_envelope(ev_agent_wait.to_envelope())
+
+            elif exec_result.status == "completed":
+                task.status = "completed"
+                task.result_summary = exec_result.result_summary
+                task.completed_at = datetime.utcnow()
+                task.updated_at = datetime.utcnow()
+
+                if agent:
+                    agent.status = "idle"
+                    agent.current_task_id = None
+                    agent.updated_at = datetime.utcnow()
+
+                # Mark all steps completed
+                steps = db.query(TaskStepModel).filter(TaskStepModel.task_id == task.id).all()
+                for s in steps:
+                    s.status = "completed"
+                    s.completed_at = datetime.utcnow()
+                    event_service.create_event(
+                        db=db,
+                        event_type=TASK_STEP_COMPLETED,
+                        agent_id=task.assigned_agent_id,
+                        task_id=task.id,
+                        payload={"step_index": s.step_index, "title": s.title},
+                        commit=False
+                    )
+
+                # Persist artifacts metadata
+                for art in exec_result.artifacts:
+                    artifact_record = ArtifactModel(
+                        task_id=task.id,
+                        name=art.get("filename", "output_artifact"),
+                        artifact_type="file",
+                        storage_path=art.get("filepath", ""),
+                        size_bytes=art.get("size_bytes", 0),
+                        created_at=datetime.utcnow(),
+                    )
+                    db.add(artifact_record)
+
+                ev_done = event_service.create_event(
+                    db=db,
+                    event_type=TASK_COMPLETED,
+                    agent_id=task.assigned_agent_id,
+                    task_id=task.id,
+                    payload={"result_summary": task.result_summary, "artifacts_count": len(exec_result.artifacts)},
+                    commit=False
+                )
+                ev_idle = event_service.create_event(
+                    db=db,
+                    event_type=AGENT_IDLE,
+                    agent_id=task.assigned_agent_id,
+                    task_id=task.id,
+                    payload={"status": "idle"},
+                    commit=False
+                )
+                db.commit()
+
+                await ws_manager.broadcast_envelope(ev_done.to_envelope())
+                await ws_manager.broadcast_envelope(ev_idle.to_envelope())
+
+                # Propose candidate memory from successful execution
+                try:
+                    await memory_extractor.extract_and_propose(
+                        db=db,
+                        task_id=task.id,
+                        agent_id=task.assigned_agent_id,
+                        task_title=task.title,
+                        task_description=task.description,
+                        execution_summary=exec_result.summary or task.result_summary or "",
+                        artifacts=exec_result.artifacts,
+                        confidence=0.9,
+                        auto_activate=False,
+                    )
+                except Exception as mem_err:
+                    logger.warning(f"Could not extract memory from task '{task.id}': {mem_err}")
+
+            else: # failed
+                task.status = "failed"
+                task.error_message = exec_result.error_message or "Execution failed"
+                task.result_summary = exec_result.result_summary
+                task.completed_at = datetime.utcnow()
+                task.updated_at = datetime.utcnow()
+
+                if agent:
+                    agent.status = "idle"
+                    agent.current_task_id = None
+                    agent.updated_at = datetime.utcnow()
+
+                ev_fail = event_service.create_event(
+                    db=db,
+                    event_type=TASK_FAILED,
+                    agent_id=task.assigned_agent_id,
+                    task_id=task.id,
+                    payload={"error": task.error_message},
+                    commit=False
+                )
+                ev_idle = event_service.create_event(
+                    db=db,
+                    event_type=AGENT_IDLE,
+                    agent_id=task.assigned_agent_id,
+                    task_id=task.id,
+                    payload={"status": "idle"},
+                    commit=False
+                )
+                db.commit()
+
+                await ws_manager.broadcast_envelope(ev_fail.to_envelope())
+                await ws_manager.broadcast_envelope(ev_idle.to_envelope())
+
+        except TaskCancelledException as e:
+            logger.info(f"Task '{task_id}' aborted by cancellation token: {e}")
+            try:
+                task = db.query(TaskModel).filter(TaskModel.id == task_id).first()
+                if task:
+                    task.status = "cancelled"
+                    task.updated_at = datetime.utcnow()
+                    agent = db.query(AgentModel).filter(AgentModel.id == task.assigned_agent_id).first()
+                    if agent:
+                        agent.status = "idle"
+                        agent.current_task_id = None
+                    ev_cancel = event_service.create_event(
+                        db=db,
+                        event_type=TASK_CANCELLED,
+                        agent_id=task.assigned_agent_id,
+                        task_id=task.id,
+                        payload={"reason": str(e)},
+                        commit=False
+                    )
+                    ev_idle = event_service.create_event(
+                        db=db,
+                        event_type=AGENT_IDLE,
+                        agent_id=task.assigned_agent_id,
+                        task_id=task.id,
+                        payload={"status": "idle"},
+                        commit=False
+                    )
+                    db.commit()
+                    await ws_manager.broadcast_envelope(ev_cancel.to_envelope())
+                    await ws_manager.broadcast_envelope(ev_idle.to_envelope())
+            except Exception as rollback_err:
+                db.rollback()
+                logger.error(f"Error handling task cancellation rollback: {rollback_err}")
+
+        except Exception as e:
+            logger.error(f"Unhandled error processing task '{task_id}': {e}", exc_info=True)
+            try:
+                task = db.query(TaskModel).filter(TaskModel.id == task_id).first()
+                if task:
+                    task.status = "failed"
+                    task.error_message = str(e)
+                    task.updated_at = datetime.utcnow()
+                    agent = db.query(AgentModel).filter(AgentModel.id == task.assigned_agent_id).first()
+                    if agent:
+                        agent.status = "idle"
+                        agent.current_task_id = None
+                    db.commit()
+            except Exception:
+                db.rollback()
+        finally:
+            self._active_cancellations.pop(task_id, None)
+            if close_db:
+                db.close()
+
+task_dispatcher = TaskDispatcher()

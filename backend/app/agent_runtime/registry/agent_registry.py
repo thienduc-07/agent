@@ -1,0 +1,277 @@
+from typing import Dict, List, Optional, Any
+from pydantic import BaseModel, Field
+from backend.app.agent_runtime.tools.base import ToolPermissionLevel
+from backend.app.agent_runtime.policies.permissions import AgentPolicy
+
+class AgentDefinition(BaseModel):
+    agent_type: str = Field(..., description="Unique type identifier for specialized agent class")
+    display_name: str = Field(..., description="Human-readable title")
+    description: str = Field(..., description="Summary of responsibilities and capabilities")
+    system_prompt: str = Field(..., description="Base system instructions guiding behavior")
+    allowed_tools: List[str] = Field(default_factory=list, description="Whitelisted tool names")
+    input_schema: Optional[Dict[str, Any]] = Field(default=None, description="Expected input structure")
+    output_schema: Optional[Dict[str, Any]] = Field(default=None, description="Expected output structure")
+    max_iterations: int = Field(default=10, description="Max reasoning loops")
+    max_tool_calls: int = Field(default=15, description="Max tool executions allowed")
+    timeout_seconds: int = Field(default=120, description="Hard timeout per subtask")
+    permission_level: ToolPermissionLevel = Field(
+        default=ToolPermissionLevel.LEVEL_0_READ_ONLY,
+        description="Maximum security clearance"
+    )
+    enabled: bool = Field(default=True, description="Whether agent is currently active")
+    concurrency_limit: int = Field(default=2, description="Max parallel subtasks of this type")
+    default_assigned_agent_id: str = Field(..., description="Physical agent ID in database")
+
+    def to_policy(self) -> AgentPolicy:
+        return AgentPolicy(
+            agent_id=self.default_assigned_agent_id,
+            max_permission_level=self.permission_level,
+            allowed_tools=self.allowed_tools,
+            allow_sandbox_write=(self.permission_level >= ToolPermissionLevel.LEVEL_1_WORKSPACE_WRITE),
+            max_iterations=self.max_iterations,
+            max_tool_calls=self.max_tool_calls,
+        )
+
+class AgentRegistry:
+    def __init__(self):
+        self._registry: Dict[str, AgentDefinition] = {}
+
+    def register(self, definition: AgentDefinition) -> None:
+        self._registry[definition.agent_type] = definition
+
+    def get(self, agent_type: str) -> Optional[AgentDefinition]:
+        return self._registry.get(agent_type)
+
+    def list_all(self) -> List[AgentDefinition]:
+        return list(self._registry.values())
+
+    def list_active(self) -> List[AgentDefinition]:
+        return [a for a in self._registry.values() if a.enabled]
+
+    def resolve_agent_type_for_agent_id(self, agent_id: str) -> Optional[AgentDefinition]:
+        for a in self._registry.values():
+            if a.default_assigned_agent_id == agent_id and a.enabled:
+                return a
+        return self.get("general")
+
+# Define Standard Specialized Agents
+GENERAL_AGENT_DEF = AgentDefinition(
+    agent_type="general",
+    display_name="Grand Line General Fleet Agent",
+    description="General operations coordinator capable of executing end-to-end tasks, inspecting workspace structures, and writing verified sandbox files.",
+    default_assigned_agent_id="agent-captain-roger",
+    system_prompt=(
+        "You are the Grand Line General Agent operating in AI Agent City.\n"
+        "Your mission is to analyze workspace structures, read documentation, summarize findings, "
+        "and generate verified reports within the workspace sandbox.\n"
+        "Security Rules:\n"
+        "- All file writes must be directed to workspace_sandbox/.\n"
+        "- Never attempt path traversal or reading forbidden files (.env, keys).\n"
+        "- Always verify outputs before reporting final completion."
+    ),
+    allowed_tools=[
+        "workspace_list",
+        "workspace.list_files",
+        "file_read",
+        "workspace.read_file",
+        "file_search",
+        "workspace.search",
+        "calculator",
+        "workspace_write",
+        "workspace.write_file",
+        "verification_tool",
+        "workspace.verify_file",
+        "artifact.create",
+        "artifact.get",
+        "artifact.list",
+        "artifact.verify",
+        "data.inspect",
+        "data.profile",
+        "data.summarize",
+        "data.validate",
+        "web.search",
+        "web.fetch_page",
+        "web.extract_text",
+        "api.call",
+        "memory_search",
+        "memory.search",
+        "memory_get",
+        "memory.get",
+        "memory_propose",
+        "memory.propose",
+        "memory_archive",
+        "memory.archive",
+    ],
+    max_tool_calls=15,
+    max_iterations=10,
+    timeout_seconds=120,
+    permission_level=ToolPermissionLevel.LEVEL_1_WORKSPACE_WRITE,
+    enabled=True,
+    concurrency_limit=2,
+)
+
+RESEARCH_AGENT_DEF = AgentDefinition(
+    agent_type="research",
+    display_name="Scholar & Research Specialist",
+    description="Gathers, reads, and analyzes workspace documents, source code, and configurations; tracks sources and distinguishes facts from unverified hypotheses.",
+    default_assigned_agent_id="agent-nami-navigator",
+    system_prompt=(
+        "You are the Research Agent (Scholar Nami) in AI Agent City.\n"
+        "Your mission is to read documents, inspect workspace directory structures, and extract verified facts.\n"
+        "Strict Operational Boundaries:\n"
+        "- Read-only access: you cannot write files or execute scripts.\n"
+        "- Always cite file paths, line ranges, or specific items in your findings.\n"
+        "- Explicitly distinguish verified facts from assumptions or unverified information.\n"
+        "- Return structured, evidence-backed findings to upstream workflows."
+    ),
+    allowed_tools=[
+        "workspace_list",
+        "workspace.list_files",
+        "file_read",
+        "workspace.read_file",
+        "file_search",
+        "workspace.search",
+        "web.search",
+        "web.fetch_page",
+        "web.extract_text",
+        "artifact.get",
+        "artifact.list",
+        "memory_search",
+        "memory.search",
+        "memory_get",
+        "memory.get",
+    ],
+    max_tool_calls=10,
+    max_iterations=8,
+    timeout_seconds=90,
+    permission_level=ToolPermissionLevel.LEVEL_0_READ_ONLY,
+    enabled=True,
+    concurrency_limit=3,
+)
+
+ANALYST_AGENT_DEF = AgentDefinition(
+    agent_type="analyst",
+    display_name="Data & Systems Analyst Agent",
+    description="Examines data structures, computes numerical metrics via safe AST tools, and identifies trends, discrepancies, and operational patterns.",
+    default_assigned_agent_id="agent-nami-navigator",
+    system_prompt=(
+        "You are the Data Analyst Agent in AI Agent City.\n"
+        "Your mission is to analyze data, compute metrics, check structures, and extract verifiable insights.\n"
+        "Strict Operational Boundaries:\n"
+        "- Perform calculations using the safe 'calculator' tool.\n"
+        "- Note data limitations, quality gaps, and confidence levels.\n"
+        "- Do not fabricate missing metrics or unbacked conclusions."
+    ),
+    allowed_tools=[
+        "workspace_list",
+        "workspace.list_files",
+        "file_read",
+        "workspace.read_file",
+        "file_search",
+        "workspace.search",
+        "calculator",
+        "data.inspect",
+        "data.profile",
+        "data.summarize",
+        "data.validate",
+        "artifact.get",
+        "artifact.list",
+        "memory_search",
+        "memory.search",
+        "memory_get",
+        "memory.get",
+    ],
+    max_tool_calls=10,
+    max_iterations=8,
+    timeout_seconds=90,
+    permission_level=ToolPermissionLevel.LEVEL_0_READ_ONLY,
+    enabled=True,
+    concurrency_limit=2,
+)
+
+WRITER_AGENT_DEF = AgentDefinition(
+    agent_type="writer",
+    display_name="Synthesis & Report Writer Agent",
+    description="Synthesizes upstream research and analysis into structured reports and documentation; generates verified sandbox artifacts.",
+    default_assigned_agent_id="agent-franky-shipwright",
+    system_prompt=(
+        "You are the Writer Agent (Shipwright Franky) in AI Agent City.\n"
+        "Your mission is to synthesize results from upstream Research and Analysis subtasks into comprehensive, verified markdown reports.\n"
+        "Strict Operational Boundaries:\n"
+        "- All report files MUST be written strictly inside workspace_sandbox/.\n"
+        "- Cite upstream evidence, files, and findings accurately.\n"
+        "- Always verify generated files using verification_tool before declaring completion."
+    ),
+    allowed_tools=[
+        "file_read",
+        "workspace.read_file",
+        "workspace_write",
+        "workspace.write_file",
+        "verification_tool",
+        "workspace.verify_file",
+        "artifact.create",
+        "artifact.get",
+        "artifact.list",
+        "artifact.verify",
+        "memory_search",
+        "memory.search",
+        "memory_get",
+        "memory.get",
+        "memory_propose",
+        "memory.propose",
+    ],
+    max_tool_calls=12,
+    max_iterations=8,
+    timeout_seconds=120,
+    permission_level=ToolPermissionLevel.LEVEL_1_WORKSPACE_WRITE,
+    enabled=True,
+    concurrency_limit=2,
+)
+
+REVIEWER_AGENT_DEF = AgentDefinition(
+    agent_type="reviewer",
+    display_name="Quality & Security Reviewer Agent",
+    description="Inspects generated reports and artifacts against initial goals, detects discrepancies or unsupported assertions, and provides structured review findings.",
+    default_assigned_agent_id="agent-zoro-quartermaster",
+    system_prompt=(
+        "You are the Reviewer Agent (Quartermaster Zoro) in AI Agent City.\n"
+        "Your mission is to rigorously evaluate generated reports and artifacts against the original user goal and upstream evidence.\n"
+        "Strict Operational Boundaries:\n"
+        "- Check if all initial user objectives have been completely addressed.\n"
+        "- Identify contradictions, unbacked assertions, or missing requirements.\n"
+        "- Return a structured review including verdict (APPROVED / REVISIONS_NEEDED), rubric score (0-100), issue list, and actionable recommendations."
+    ),
+    allowed_tools=[
+        "file_read",
+        "workspace.read_file",
+        "verification_tool",
+        "workspace.verify_file",
+        "artifact.get",
+        "artifact.list",
+        "artifact.verify",
+        "data.validate",
+        "memory_search",
+        "memory.search",
+        "memory_get",
+        "memory.get",
+        "memory_archive",
+        "memory.archive",
+    ],
+    max_tool_calls=8,
+    max_iterations=6,
+    timeout_seconds=90,
+    permission_level=ToolPermissionLevel.LEVEL_0_READ_ONLY,
+    enabled=True,
+    concurrency_limit=2,
+)
+
+def create_default_agent_registry() -> AgentRegistry:
+    reg = AgentRegistry()
+    reg.register(GENERAL_AGENT_DEF)
+    reg.register(RESEARCH_AGENT_DEF)
+    reg.register(ANALYST_AGENT_DEF)
+    reg.register(WRITER_AGENT_DEF)
+    reg.register(REVIEWER_AGENT_DEF)
+    return reg
+
+default_agent_registry = create_default_agent_registry()

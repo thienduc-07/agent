@@ -1,0 +1,130 @@
+import { IslandArea } from "@/types";
+
+export const ISLAND_AREAS: Record<string, IslandArea> = {
+  harbor: {
+    id: "harbor",
+    name: "Coastal Harbor",
+    title: "Cầu Cảng & Hồ Nước (Jinbe & Brook)",
+    description: "Cửa ngõ hàng hải của hòn đảo với cầu cảng gỗ, hai cột nước xoáy của Jinbe và sân khấu băng giá của Brook.",
+    purpose: "Quản lý hạ tầng mạng lưới, điều phối dòng dữ liệu, giám sát hải lưu và tiếp nhận hàng hóa.",
+    position: [-8, 1.2, 8],
+    cameraTarget: [-8, 1.5, 8],
+    cameraPosition: [-4, 8, 18],
+    assignedAgentId: "agent-jinbe-helmsman",
+    accentColor: "#0099ff", // Ocean Blue
+    features: [
+      "Cầu cảng gỗ dài vươn ra đại dương",
+      "Hai cột nước xoáy Kairyu Ipponzeoi",
+      "Sân khấu băng giá và nốt nhạc 3D của Brook",
+      "Bến đón tàu chiến Thousand Sunny",
+    ],
+  },
+  sunny_shipyard: {
+    id: "sunny_shipyard",
+    name: "Thousand Sunny Pier",
+    title: "Cầu Cảng Tàu Thousand Sunny",
+    description: "Chiến hạm Thousand Sunny kiêu hãnh chuẩn nguyên tác neo tại bến Tây Nam với đầu sư tử mạ vàng, cánh buồm đại kỳ Mũ Rơm, cờ hải tặc và boong cỏ xanh.",
+    purpose: "Bảo trì nâng cấp tàu chiến Thousand Sunny, đóng gói ứng dụng, cấu hình Docker/CI-CD và triển khai sản phẩm thực tế.",
+    position: [-18, 0.5, 16],
+    cameraTarget: [-18, 1.2, 16],
+    cameraPosition: [-12, 8, 26],
+    assignedAgentId: "agent-franky-shipwright",
+    accentColor: "#ff3333", // Franky Red
+    features: [
+      "Đầu sư tử bờm vàng rực sáng",
+      "Cánh buồm trắng in huy hiệu Jolly Roger Mũ Rơm",
+      "Cột buồm đại kỳ cướp biển tung bay",
+      "Cầu cảng gỗ kết nối bờ cát với thân tàu",
+    ],
+  },
+  strawhat_village: {
+    id: "strawhat_village",
+    name: "Straw Hat Village & Galley",
+    title: "Nhà Hàng Bếp Baratie & Vườn Quýt (Sanji & Nami)",
+    description: "Khu làng hải tặc ấm cúng ven hồ với căn bếp Baratie của Sanji và đồi vườn quýt sum suê của Nami.",
+    purpose: "Thiết kế giao diện UI/UX, tạo phong cách CSS/WebGL, phân tích dữ liệu kinh doanh, tạo tài liệu bảng tính và báo cáo.",
+    position: [-10, 2.3, 2],
+    cameraTarget: [-10, 2.6, 2],
+    cameraPosition: [-4, 9, 12],
+    assignedAgentId: "agent-sanji-cook",
+    accentColor: "#ffaa00", // Warm Orange
+    features: [
+      "Khu nhà hàng gỗ Baratie ven hồ nước",
+      "Chân cước lửa plasma Ifrit Jambe của Sanji",
+      "Đồi cây quýt trĩu quả vàng của Nami",
+      "Đám mây giông Zeus tích điện vàng",
+    ],
+  },
+  workshop: {
+    id: "workshop",
+    name: "Workshop & Watchtower",
+    title: "Tháp Canh Usopp & Siêu Xưởng Franky",
+    description: "Tháp canh gỗ cao vút của God Usopp bên cạnh thác nước và bệ cơ khí Mecha General Franky BF-38.",
+    purpose: "QA Automation, kiểm thử tự động Playwright, tìm lỗi bảo mật, đóng gói Docker và bắn chùm laser Radical Beam.",
+    position: [5, 14.5, -10],
+    cameraTarget: [5, 14.8, -10],
+    cameraPosition: [12, 19, 0],
+    assignedAgentId: "agent-usopp-sniper",
+    accentColor: "#ff9900", // Usopp Orange
+    features: [
+      "Tháp canh gỗ cao nhiều tầng của God Usopp",
+      "Ná cao su khổng lồ Kuro Kabuto bắn Hỏa Điểu Tinh",
+      "Mecha Robot General Franky BF-38",
+      "Chùm tia Laser Radical Beam rực sáng",
+    ],
+  },
+  library: {
+    id: "library",
+    name: "Robin's Ruins & Chopper's Sakura Hill",
+    title: "Đồi Sakura Chopper & Cánh Tay Hoa Robin",
+    description: "Đồi hoa anh đào nở hồng rực rỡ với phòng khám y tế của Chopper và khu di tích cánh tay hoa sen Gigante Fleur của Robin.",
+    purpose: "Chẩn đoán và vá lỗi runtime, tối ưu hóa bộ nhớ, nghiên cứu tri thức chuyên sâu, RAG và xuất bản báo cáo .docx/.pdf.",
+    position: [-12.5, 4.22, -1.0],
+    cameraTarget: [-12.5, 4.4, -1.0],
+    cameraPosition: [-6, 9.5, 7.5],
+    assignedAgentId: "agent-chopper-doctor",
+    accentColor: "#ff66b2", // Sakura Pink
+    features: [
+      "Rừng Hoa Anh Đào (Sakura) nở rộ nhiều cụm hoa hồng phấn",
+      "Phòng khám y tế mái trắng chữ thập đỏ của Chopper",
+      "Hàng chục cánh tay hoa khổng lồ Gigante Fleur của Robin",
+      "Cánh hoa anh đào lấp lánh bay trong gió",
+    ],
+  },
+  captain_hq: {
+    id: "captain_hq",
+    name: "Sun God Plaza",
+    title: "Đài Thần Mặt Trời Nika (Monkey D. Luffy Gear 5)",
+    description: "Đài đá hình nón cụt lộ thiên tại đỉnh trung tâm hòn đảo, nơi Thần Mặt Trời Nika (Gear 5) phóng tia sét Haki Bá Vương đỏ-đen rực lửa.",
+    purpose: "Chỉ huy tối cao của Luffy Gear 5, hoạch định chiến dịch đa bước, phân bổ task chuyên môn cho toàn bộ 10 thành viên và tổng hợp kết quả.",
+    position: [2, 4.8, 2],
+    cameraTarget: [2, 5.2, 2],
+    cameraPosition: [2, 12, 16],
+    assignedAgentId: "agent-captain-roger",
+    accentColor: "#ffffff", // Sun God White
+    features: [
+      "Đài đá lộ thiên Thần Mặt Trời tại đỉnh trung tâm đảo",
+      "Luffy Gear 5 tóc trắng mây Haki bồng bềnh",
+      "Tia sét Haki Bá Vương đỏ-đen Bajrang Lightning cắm xuống đất",
+      "Tầm nhìn 360 độ bao quát toàn bộ 10 thành viên",
+    ],
+  },
+  lookout_cliffs: {
+    id: "lookout_cliffs",
+    name: "Lookout Cliffs",
+    title: "Đạo Trường Wano, Rừng Trúc & Hải Đăng (Zoro)",
+    description: "Cao nguyên đá phủ cỏ xanh phía Đông Nam, nơi Zoro luyện tam kiếm phái King of Hell bên cạnh rừng trúc và ngọn hải đăng vòm kính.",
+    purpose: "Kiến trúc hệ thống backend cốt lõi, lập trình thuật toán, tối ưu hiệu năng C++/Python/TypeScript và kiểm định an ninh.",
+    position: [6, 3.6, 11],
+    cameraTarget: [6, 4.0, 11],
+    cameraPosition: [12, 11, 20],
+    assignedAgentId: "agent-zoro-quartermaster",
+    accentColor: "#00ffaa", // Emerald Green
+    features: [
+      "Mỏm đá cao nguyên phủ cỏ xanh đón gió biển",
+      "Zoro với hào quang kiếm khí xanh ngọc Enma",
+      "Rừng trúc xanh mướt đung đưa trong gió",
+      "Hải đăng tròn màu trắng có đài quan sát vòm kính",
+    ],
+  },
+};

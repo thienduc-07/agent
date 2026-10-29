@@ -1,0 +1,1 @@
+[{"vessel_id": "V1", "crew": 25, "cannon_power": 150.0, "status": "active"}, {"vessel_id": "V2", "crew": 40, "cannon_power": 220.5, "status": "active"}, {"vessel_id": "V3", "crew": null, "cannon_power": 80.0, "status": "docked"}]
